@@ -92,7 +92,7 @@ class DBM(Model, Block):
         self.input = T.matrix('input')
 
         # configure input-space (?new pylearn2 feature?)
-        self.input_space = VectorSpace(nvis)
+        self.input_space = VectorSpace(n_u[0])
 
         for i, nui in enumerate(n_u):
 
