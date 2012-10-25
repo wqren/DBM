@@ -93,6 +93,7 @@ class DBM(Model, Block):
 
         # configure input-space (?new pylearn2 feature?)
         self.input_space = VectorSpace(n_u[0])
+        self.output_space = VectorSpace(n_u[-1])
 
         for i, nui in enumerate(n_u):
 
@@ -227,7 +228,7 @@ class DBM(Model, Block):
         self.force_batch_size = batch_size       # force minibatch size
         self.do_theano()
 
-    def learn(self, dataset, batch_size):
+    def train_batch(self, dataset, batch_size):
         """
         Performs one-step of gradient descent, using the given dataset.
         :param dataset: Pylearn2 dataset to train the model with.
@@ -267,6 +268,8 @@ class DBM(Model, Block):
             print 'Saving to %s ...' %fname,
             serial.save(fname, self)
             print 'done'
+
+        return True
 
 
     def learn_mini_batch(self, x):
@@ -421,7 +424,7 @@ class DBM(Model, Block):
         
         return channels
 
-    def get_monitoring_channels(self, x):
+    def get_monitoring_channels(self, x, y=None):
         chans = {}
 
         for i in xrange(self.depth):
@@ -467,35 +470,3 @@ class DBM(Model, Block):
                 params += [p]
 
         return utils_cost.Cost(cost, params)
-
-
-class TrainingAlgorithm(default.DefaultTrainingAlgorithm):
-
-    def setup(self, model, dataset, max_updates=1e6):
-        super(TrainingAlgorithm, self).setup(model, dataset)
-        self.max_updates = max_updates
-
-    def train(self, dataset):
-        assert self.bSetup
-        model = self.model
-
-        if self.batch_size is None:
-            batch_size = model.force_batch_size
-        else:
-            batch_size = self.batch_size
-            if hasattr(model,'force_batch_size'):
-                assert model.force_batch_size <= 0 or batch_size == model.force_batch_size
-
-        if self.first:
-            self.first = False
-            self.monitor()
-
-        for i in xrange(self.batches_per_iter):
-            model.learn(dataset, batch_size)
-            model.monitor.batches_seen += 1
-            model.monitor.examples_seen += batch_size
-
-        if self.monitoring_dataset:
-            self.monitor()
-
-        return model.monitor.batches_seen < self.max_updates

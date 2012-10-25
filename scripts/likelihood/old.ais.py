@@ -39,10 +39,6 @@ parser.add_option('--large', action='store_true', dest='large')
 # load model and retrieve parameters
 model = serial.load(opts.path)
 
-# load dataset
-from pylearn2.datasets import mnist
-assert opts.dataset in ['train','test']
-data = mnist.MNIST(opts.dataset)
 
 ##########################
 ## BUILD THEANO FUNCTIONS
@@ -57,48 +53,12 @@ energy_fn = theano.function([beta], E)
 new_psamples = model.e_step(model.psamples, n_steps=model.pos_mf_steps)
 inference_fn = function([model.input], new_psamples)
 
-# configure baserate bias for h1
-temp = numpy.asarray(data.X, dtype=floatX)
-mean_data = numpy.mean(temp, axis=0)
-psamples = inference_fn(mean_data[None,:])
-
-h1_input = numpy.dot(mean_data, model.W[1].get_value()) +\
-           numpy.dot(psamples[2], model.W[2].get_value().T)
-h1_input = numpy.minimum(h1_input, 1-1e-5)
-h1_input = numpy.maximum(h1_input, 1e-5)
-h1bias_a = -numpy.log(1./h1_input[0] - 1.)
-
-### build function to sample
-def neg_sampling(dbm, nsamples, beta=1.0):
-
-    new_nsamples = [nsamples[i] for i in xrange(dbm.depth)]
-
-    new_nsamples[0] = dbm.sample_hi_given(new_nsamples, 0, beta)
-    new_nsamples[2] = dbm.sample_hi_given(new_nsamples, 2, beta)
-
-    temp =  dbm.hi_given(new_nsamples, 1, beta, apply_sigmoid=False)
-    temp += h1bias_a * (1. - beta)
-    h1_mean = T.nnet.sigmoid(temp)
-
-    new_nsamples[1] = dbm.theano_rng.binomial(
-                        size = (dbm.batch_size, dbm.n_u[1]),
-                        n=1, p=h1_mean, dtype=floatX)
-    return new_nsamples
-
+# build function to sample
 updates = {}
-new_nsamples = neg_sampling(model, model.nsamples, beta=beta)
+new_nsamples = model.neg_sampling(model.nsamples, n_steps=model.neg_sample_steps, beta=beta)
 for (nsample, new_nsample) in zip(model.nsamples, new_nsamples):
     updates[nsample] = new_nsample
 sample_fn = function([beta], [], updates=updates, name='sample_func')
-
-### build function to compute free-energy of h1
-h1 = model.nsamples[1]
-fe_bp_h1  = - T.sum(T.nnet.softplus(beta * (model.bias[0] + T.dot(h1, model.W[1].T))), axis=1) \
-            - T.sum(T.nnet.softplus(beta * (model.bias[2] + T.dot(h1, model.W[2]))), axis=1) \
-            - T.dot(h1, model.bias[1]) * beta \
-            - T.dot(h1, h1bias_a) * (1. - beta)
-free_energy_fn = theano.function([beta], fe_bp_h1)
-
 
 ###########
 ## RUN AIS
@@ -138,7 +98,8 @@ for i in range(len(betas) - 1):
 
     bp, bp1 = betas[i], betas[i+1]
 
-    log_ais_w += free_energy_fn(bp) - free_energy_fn(bp1)
+    # log-ratio of (free) energies for two nearby temperatures
+    log_ais_w += energy_fn(bp) - energy_fn(bp1)
 
     sample_fn(bp1)
 
@@ -150,9 +111,9 @@ print 'dlogz = ', dlogz
 print 'var_dlogz = ', var_dlogz
 
 # default log-partition
-log_za = numpy.sum(numpy.log(1 + numpy.exp(model.bias[1].get_value())))
-log_za += model.n_u[0] * numpy.log(2)
-log_za += model.n_u[0] * numpy.log(2)
+log_za = numpy.sum(numpy.log(1 + numpy.exp(model.bias[0].get_value())))
+for n_ui in model.n_u[1:]:
+    log_za += n_ui * numpy.log(2)
 log_z = log_za + dlogz
 
 print 'log_za = ', log_za
@@ -162,6 +123,10 @@ print 'var_dlogz = ',  var_dlogz
 ##############################
 # COMPUTE TEST SET LIKELIHOOD
 ##############################
+from pylearn2.datasets import mnist
+assert opts.dataset in ['train','test']
+data = mnist.MNIST(opts.dataset)
+
 i = 0.
 nll = 0
 
