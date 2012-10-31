@@ -40,7 +40,8 @@ model = serial.load(opts.path)
 
 def get_dims(n):
     num_rows = numpy.floor(numpy.sqrt(n))
-    return (num_rows, numpy.ceil(n / num_rows))
+    return (numpy.int(num_rows),
+            numpy.int(numpy.ceil(n / num_rows)))
 
 nblocks = model.depth - 1
 W = [model.W[i].get_value().T for i in xrange(1, model.depth)]
@@ -49,7 +50,8 @@ print 'max_filters = ', max_filters
 
 block_viewer = PatchViewer(get_dims(max_filters),
                            (opts.height, opts.width), 
-                           is_color = opts.color, pad=(2,2))
+                           is_color = opts.color,
+                           pad=(2,2))
 
 main_viewer = PatchViewer(get_dims(nblocks), 
                           (block_viewer.image.shape[0],
@@ -87,7 +89,7 @@ for di, w_di in enumerate(W):
         topo_view = view_converter.design_mat_to_topo_view(new_w[fi:fi+1])
         block_viewer.add_patch(topo_view[0])
 
-    main_viewer.add_patch(block_viewer.image - 0.5)
+    main_viewer.add_patch(block_viewer.image[:,:,0] - 0.5)
     block_viewer.clear()
     
     prev_w = new_w

@@ -1,7 +1,9 @@
 import numpy
+import theano
 import theano.tensor as T
-from utils import sharedX, floatX
 from theano.printing import Print
+from DBM import sharedX
+floatX = theano.config.floatX
 
 class Cost():
 
