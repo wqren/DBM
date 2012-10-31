@@ -27,7 +27,7 @@ class DBM(Model, Block):
             iscales=None, clip_min={}, clip_max={},
             pos_mf_steps=1, neg_sample_steps=1, 
             lr = 1e-3, lr_anneal_coeff=0, lr_timestamp=None, lr_mults = {},
-            l1 = {}, l2 = {}, l1_inf={},
+            l1 = {}, l2 = {}, l1_inf={}, flags={},
             batch_size = 13,
             compile=True,
             seed=1241234,
@@ -166,15 +166,19 @@ class DBM(Model, Block):
         for (psample, new_psample) in zip(self.psamples[1:], new_psamples[1:]):
             pos_updates[psample] = new_psample
 
-        cost = self.ml_cost(new_psamples, new_nsamples)
+        ml_cost = self.ml_cost(new_psamples, self.nsamples)
         reg_cost = self.get_reg_cost()
-        cost.combine(reg_cost)
+        if self.flags.get('enable_natural', False):
+            self.get_natural_direction(ml_cost, self.nsamples)
+        learning_grads = utils_cost.compute_gradients(ml_cost, reg_cost)
 
         ##
         # COMPUTE GRADIENTS WRT. TO ALL COSTS
         ##
-        cost.compute_gradients()
-        learning_updates = cost.get_updates(self.lr_shrd, self.lr_mults_shrd)
+        learning_updates = utils_cost.get_updates(             
+                learning_grads,
+                self.lr_shrd,
+                multipliers = self.lr_mults_shrd) 
         learning_updates.update(pos_updates)
       
         # build theano function to train on a single minibatch
@@ -213,7 +217,6 @@ class DBM(Model, Block):
         Change the batch size of a model which has already been initialized.
         :param batch_size: int. new batch size.
         """
-
         self.neg_ev = sharedX(self.rng.rand(batch_size, self.n_u[0]), name='neg_ev')
         self.psamples = []
         self.nsamples = []
@@ -450,7 +453,6 @@ class DBM(Model, Block):
         :param l2: dict containing amount of L2 regularization for Wg, Wh and Wv
         :param l1: dict containing amount of L1 regularization for Wg, Wh and Wv
         :param l1_inf: dict containing amount of L1 (centered at -inf) reg for Wg, Wh and Wv
-        :param softplus: softplus activation function (used on biases)
         """
         cost = 0.
         params = []
