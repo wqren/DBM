@@ -160,7 +160,7 @@ class DBM(Model, Block):
         self.sample_neg_func = function([], [],
                 updates=neg_updates,
                 name='sample_neg_func',
-                profile=1)
+                profile=0)
 
         ###
         # POSITIVE PHASE ESTEP + LEARNING
@@ -191,7 +191,7 @@ class DBM(Model, Block):
         self.batch_train_func = function([self.input], [],
                 updates=learning_updates,
                 name='train_rbm_func',
-                profile=1)
+                profile=0)
 
         ##
         # CONSTRAINTS
@@ -276,7 +276,7 @@ class DBM(Model, Block):
            (self.batches_seen in self.save_at or
             self.batches_seen % self.save_every == 0):
 
-            fname = self.my_save_path + '_e%i.pkl' % (self.batches_seen/1000)
+            fname = self.my_save_path + '_e%i.pkl' % (self.batches_seen)
             print 'Saving to %s ...' %fname,
             serial.save(fname, self)
             print 'done'
@@ -503,7 +503,7 @@ class DBM(Model, Block):
                 rtol=1e-5,
                 damp = 0.1,
                 maxit = 30,
-                profile=1)[0]
+                profile=0)[0]
 
         ml_cost.grads[self.W[1]] = newgrads[0]
         ml_cost.grads[self.W[2]] = newgrads[1]
