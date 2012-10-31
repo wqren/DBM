@@ -15,9 +15,11 @@ from pylearn2.base import Block
 from pylearn2.models.model import Model
 from pylearn2.space import VectorSpace
 
-from . import tools
-from . import cost as utils_cost
-from . import sharedX, floatX, npy_floatX
+from DBM import tools
+from DBM import cost as utils_cost
+from DBM import minres
+from DBM import natural
+from DBM import sharedX, floatX, npy_floatX
 
 class DBM(Model, Block):
     """Bilinear Restricted Boltzmann Machine (RBM)  """
@@ -155,7 +157,10 @@ class DBM(Model, Block):
         neg_updates = {self.neg_ev: new_ev}
         for (nsample, new_nsample) in zip(self.nsamples, new_nsamples):
             neg_updates[nsample] = new_nsample
-        self.sample_neg_func = function([], [], updates=neg_updates, name='sample_neg_func')
+        self.sample_neg_func = function([], [],
+                updates=neg_updates,
+                name='sample_neg_func',
+                profile=1)
 
         ###
         # POSITIVE PHASE ESTEP + LEARNING
@@ -167,6 +172,7 @@ class DBM(Model, Block):
             pos_updates[psample] = new_psample
 
         ml_cost = self.ml_cost(new_psamples, self.nsamples)
+        ml_cost.compute_gradients()
         reg_cost = self.get_reg_cost()
         if self.flags.get('enable_natural', False):
             self.get_natural_direction(ml_cost, self.nsamples)
@@ -182,7 +188,10 @@ class DBM(Model, Block):
         learning_updates.update(pos_updates)
       
         # build theano function to train on a single minibatch
-        self.batch_train_func = function([self.input], [], updates=learning_updates, name='train_rbm_func')
+        self.batch_train_func = function([self.input], [],
+                updates=learning_updates,
+                name='train_rbm_func',
+                profile=1)
 
         ##
         # CONSTRAINTS
@@ -472,3 +481,32 @@ class DBM(Model, Block):
                 params += [p]
 
         return utils_cost.Cost(cost, params)
+
+    def get_natural_direction(self, ml_cost, nsamples):
+        assert self.depth == 3
+        inputs = [ml_cost.grads[self.W[1]],
+                  ml_cost.grads[self.W[2]],
+                  ml_cost.grads[self.bias[0]],
+                  ml_cost.grads[self.bias[1]],
+                  ml_cost.grads[self.bias[2]]]
+
+        def Lx_func(xw1, xw2, xbias0, xbias1, xbias2):
+            return natural.compute_Lx(
+                    self.nsamples[0],
+                    self.nsamples[1],
+                    self.nsamples[2],
+                    xw1, xw2, xbias0, xbias1, xbias2)
+            
+        newgrads = minres.minres(
+                Lx_func,
+                inputs,
+                rtol=1e-5,
+                damp = 0.1,
+                maxit = 30,
+                profile=1)[0]
+
+        ml_cost.grads[self.W[1]] = newgrads[0]
+        ml_cost.grads[self.W[2]] = newgrads[1]
+        ml_cost.grads[self.bias[0]] = newgrads[2]
+        ml_cost.grads[self.bias[1]] = newgrads[3]
+        ml_cost.grads[self.bias[2]] = newgrads[4]

@@ -9,47 +9,91 @@ from DBM import minres
 from DBM import lincg
 
 rng = numpy.random.RandomState(92832)
-(M,N0,N1,N2) = (1000,11,12,13)
-v = rng.rand(M,N0).astype('float32')
-g = rng.rand(M,N1).astype('float32')
-h = rng.rand(M,N2).astype('float32')
+(M,N0,N1,N2) = (1000,3,4,5)
+v = rng.randint(low=0, high=2, size=(M,N0)).astype('float32')
+g = rng.randint(low=0, high=2, size=(M,N1)).astype('float32')
+h = rng.randint(low=0, high=2, size=(M,N2)).astype('float32')
 xw_mat = (numpy.dot(v.T, g) / M).astype('float32')
 xv_mat = (numpy.dot(g.T, h) / M).astype('float32')
 xw = xw_mat.flatten()
 xv = xv_mat.flatten()
-x = numpy.hstack((xw.flatten(), xv.flatten()))
+xa = numpy.mean(v, axis=0)
+xb = numpy.mean(g, axis=0)
+xc = numpy.mean(h, axis=0)
+x = numpy.hstack((xw, xv, xa, xb, xc))
 
 vg = (v[:,:,None] * g[:,None,:]).reshape(M,-1)
 gh = (g[:,:,None] * h[:,None,:]).reshape(M,-1)
+
+# W-rows
 Lww = numpy.dot(vg.T, vg)
 Lwv = numpy.dot(vg.T, gh)
+Lwa = numpy.dot(vg.T, v)
+Lwb = numpy.dot(vg.T, g)
+Lwc = numpy.dot(vg.T, h)
+# V-rows
 Lvw = numpy.dot(gh.T, vg)
 Lvv = numpy.dot(gh.T, gh)
+Lva = numpy.dot(gh.T, v)
+Lvb = numpy.dot(gh.T, g)
+Lvc = numpy.dot(gh.T, h)
+# a-rows
+Law = numpy.dot(v.T, vg)
+Lav = numpy.dot(v.T, gh)
+Laa = numpy.dot(v.T, v)
+Lab = numpy.dot(v.T, g)
+Lac = numpy.dot(v.T, h)
+# b-rows
+Lbw = numpy.dot(g.T, vg)
+Lbv = numpy.dot(g.T, gh)
+Lba = numpy.dot(g.T, v)
+Lbb = numpy.dot(g.T, g)
+Lbc = numpy.dot(g.T, h)
+# c-rows
+Lcw = numpy.dot(h.T, vg)
+Lcv = numpy.dot(h.T, gh)
+Lca = numpy.dot(h.T, v)
+Lcb = numpy.dot(h.T, g)
+Lcc = numpy.dot(h.T, h)
+
 Lw = numpy.dot(v.T, g).flatten()
 Lv = numpy.dot(g.T, h).flatten()
+# mean will be taken later
+La = numpy.sum(v, axis=0)
+Lb = numpy.sum(g, axis=0)
+Lc = numpy.sum(h, axis=0)
+
+Minv = numpy.float32(1./M)
+M2inv = numpy.float32(1./M**2)
 
 L1 = numpy.vstack((
-        numpy.hstack((Lww, Lwv)),
-        numpy.hstack((Lvw, Lvv)))) / M
-L1x = numpy.dot(L1, x)
-L1x_w = L1x[:N0*N1].reshape(N0,N1)
-L1x_v = L1x[N0*N1:].reshape(N1,N2)
+        numpy.hstack((Lww, Lwv, Lwa, Lwb, Lwc)),
+        numpy.hstack((Lvw, Lvv, Lva, Lvb, Lvc)),
+        numpy.hstack((Law, Lav, Laa, Lab, Lac)),
+        numpy.hstack((Lbw, Lbv, Lba, Lbb, Lbc)),
+        numpy.hstack((Lcw, Lcv, Lca, Lcb, Lcc)),
+        )) * Minv
 
 L2 = numpy.outer(
-            numpy.hstack((Lw, Lv)),
-            numpy.hstack((Lw, Lv))) / M**2
-L2x = numpy.dot(L2, x)
-L2x_w = L2x[:N0*N1].reshape(N0,N1)
-L2x_v = L2x[N0*N1:].reshape(N1,N2)
+            numpy.hstack((Lw, Lv, La, Lb, Lc)),
+            numpy.hstack((Lw, Lv, La, Lb, Lc))) * M2inv
 
 L = L1 - L2
 Lx = numpy.dot(L, x)
 Lx_w = Lx[:N0*N1].reshape(N0,N1)
-Lx_v = Lx[N0*N1:].reshape(N1,N2)
+Lx_v = Lx[N0*N1 : N0*N1 + N1*N2].reshape(N1,N2)
+Lx_a = Lx[N0*N1 + N1*N2 : N0*N1 + N1*N2 + N0]
+Lx_b = Lx[N0*N1 + N1*N2 + N0 : N0*N1 + N1*N2 + N0 + N1]
+Lx_c = Lx[-N2:]
+
 ## now compute L^-1 x
 Linv_x = linalg.cho_solve(linalg.cho_factor(L), x)
-Linv_xw = Linv_x[:N0*N1].reshape(N0,N1)
-Linv_xv = Linv_x[N0*N1:].reshape(N1,N2)
+Linv_x_w = Linv_x[:N0*N1].reshape(N0,N1)
+Linv_x_v = Linv_x[N0*N1 : N0*N1 + N1*N2].reshape(N1,N2)
+Linv_x_a = Linv_x[N0*N1 + N1*N2 : N0*N1 + N1*N2 + N0]
+Linv_x_b = Linv_x[N0*N1 + N1*N2 + N0 : N0*N1 + N1*N2 + N0 + N1]
+Linv_x_c = Linv_x[-N2:]
+
 
 def test_compute_Lx():
 
@@ -57,126 +101,79 @@ def test_compute_Lx():
     vv = T.matrix()
     gg = T.matrix()
     hh = T.matrix()
+    aa = T.vector()
+    bb = T.vector()
+    cc = T.vector()
     xxw_mat = T.matrix()
     xxv_mat = T.matrix()
     xxw = T.vector()
     xxv = T.vector()
+    xxa = T.vector()
+    xxb = T.vector()
+    xxc = T.vector()
 
-    # just test that basic things run for now (shapes mostly)
-    Lww_xw = natural.compute_Lww_xw(vv, gg, hh, xxw)
-    f = theano.function([vv, gg, hh, xxw], Lww_xw, on_unused_input='ignore')
-    rval1 = f(v, g, h, xw)
-
-    Lwv_xv = natural.compute_Lwv_xv(vv, gg, hh, xxv)
-    f = theano.function([vv, gg, hh, xxv], Lwv_xv, on_unused_input='ignore')
-    rval2 = f(v, g, h, xv)
-
-    Lvw_xw = natural.compute_Lvw_xw(vv, gg, hh, xxw)
-    f = theano.function([vv, gg, hh, xxw], Lvw_xw, on_unused_input='ignore')
-    rval3 = f(v, g, h, xw)
-
-    Lvv_xv = natural.compute_Lvv_xv(vv, gg, hh, xxv)
-    f = theano.function([vv, gg, hh, xxv], Lvv_xv, on_unused_input='ignore')
-    rval4 = f(v, g, h, xv)
-
-    # test compute_Lx_term1
-    [Lx_term1_1, Lx_term1_2] = natural.compute_Lx_term1(vv, gg, hh, xxw, xxv)
-    f = theano.function([vv, gg, hh, xxw, xxv], [Lx_term1_1, Lx_term1_2])
-    [rval1, rval2] = f(v, g, h, xw, xv)
-    numpy.testing.assert_almost_equal(L1x_w, rval1, decimal=3)
-    numpy.testing.assert_almost_equal(L1x_v, rval2, decimal=3)
-
-    # test compute_Lx_term2
-    [Lx_term2_1, Lx_term2_2] = natural.compute_Lx_term2(vv, gg, hh, xxw, xxv)
-    f = theano.function([vv, gg, hh, xxw, xxv], [Lx_term2_1, Lx_term2_2])
-    [rval1, rval2] = f(v, g, h, xw, xv)
-    numpy.testing.assert_almost_equal(L2x_w, rval1, decimal=3)
-
-    # just test that basic things run for now (shapes mostly)
-    Lww_xw = natural.compute_Lww_xw(vv, gg, hh, xxw)
-    f = theano.function([vv, gg, hh, xxw], Lww_xw, on_unused_input='ignore')
-    rval1 = f(v, g, h, xw)
-
-    Lwv_xv = natural.compute_Lwv_xv(vv, gg, hh, xxv)
-    f = theano.function([vv, gg, hh, xxv], Lwv_xv, on_unused_input='ignore')
-    rval2 = f(v, g, h, xv)
-
-    Lvw_xw = natural.compute_Lvw_xw(vv, gg, hh, xxw)
-    f = theano.function([vv, gg, hh, xxw], Lvw_xw, on_unused_input='ignore')
-    rval3 = f(v, g, h, xw)
-
-    Lvv_xv = natural.compute_Lvv_xv(vv, gg, hh, xxv)
-    f = theano.function([vv, gg, hh, xxv], Lvv_xv, on_unused_input='ignore')
-    rval4 = f(v, g, h, xv)
-
-    # test compute_Lx_term1
-    [Lx_term1_1, Lx_term1_2] = natural.compute_Lx_term1(vv, gg, hh, xxw, xxv)
-    f = theano.function([vv, gg, hh, xxw, xxv], [Lx_term1_1, Lx_term1_2])
-    [rval1, rval2] = f(v, g, h, xw, xv)
-    numpy.testing.assert_almost_equal(L1x_w, rval1, decimal=3)
-    numpy.testing.assert_almost_equal(L1x_v, rval2, decimal=3)
-
-    # test compute_Lx_term2
-    [Lx_term2_1, Lx_term2_2] = natural.compute_Lx_term2(vv, gg, hh, xxw, xxv)
-    f = theano.function([vv, gg, hh, xxw, xxv], [Lx_term2_1, Lx_term2_2])
-    [rval1, rval2] = f(v, g, h, xw, xv)
-    numpy.testing.assert_almost_equal(L2x_w, rval1, decimal=3)
-    numpy.testing.assert_almost_equal(L2x_v, rval2, decimal=3)
-
-    # test LLx
-    LLx = natural.compute_Lx(vv, gg, hh, xxw_mat, xxv_mat)
-    f = theano.function([vv, gg, hh, xxw_mat, xxv_mat], LLx)
-    [rval1, rval2] = f(v, g, h, xw_mat, xv_mat)
-    numpy.testing.assert_almost_equal(Lx_w, rval1, decimal=3)
-    numpy.testing.assert_almost_equal(Lx_v, rval2, decimal=3)
+    # test compute_Lx
+    LLx = natural.compute_Lx(vv, gg, hh, xxw_mat, xxv_mat, xxa, xxb, xxc)
+    f = theano.function([vv, gg, hh, xxw_mat, xxv_mat, xxa, xxb, xxc], LLx)
+    rvals = f(v, g, h, xw_mat, xv_mat, xa, xb, xc)
+    numpy.testing.assert_almost_equal(Lx_w, rvals[0], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_v, rvals[1], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_a, rvals[2], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_b, rvals[3], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_c, rvals[4], decimal=3)
 
  
 def test_minres():
-    (M,N0,N1,N2) = (10,11,12,13)
-    
     vv = theano.shared(v, name='v')
     gg = theano.shared(g, name='g')
     hh = theano.shared(h, name='h')
     dw = T.dot(v.T,g) / M
     dv = T.dot(g.T,h) / M
-    dw.name = 'dw'
-    dv.name = 'dv'
-
+    da = T.mean(v, axis=0)
+    db = T.mean(g, axis=0)
+    dc = T.mean(h, axis=0)
+   
     newgrads = minres.minres(
-            lambda xw, xv: natural.compute_Lx(vv,gg,hh,xw,xv),
-            [dw, dv],
+            lambda xw, xv, xa, xb, xc: natural.compute_Lx(vv,gg,hh,xw,xv,xa,xb,xc),
+            [dw, dv, da, db, dc],
             rtol=1e-5,
             damp = 0.,
-            maxit = 100,
+            maxit = 30,
             profile=0)[0]
+
     f = theano.function([], newgrads)
-    [new_dw, new_dv] = f()
+    [new_dw, new_dv, new_da, new_db, new_dc] = f()
     import pdb; pdb.set_trace()
-    numpy.testing.assert_almost_equal(Linv_xw, new_dw, decimal=3)
-    numpy.testing.assert_almost_equal(Linv_xv, new_dv, decimal=3)
+    numpy.testing.assert_almost_equal(Linv_x_w, new_dw, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_v, new_dv, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_a, new_da, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_b, new_db, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_c, new_dc, decimal=1)
 
 
 def test_linearcg():
-    (M,N0,N1,N2) = (10,11,12,13)
-    
     vv = theano.shared(v, name='v')
     gg = theano.shared(g, name='g')
     hh = theano.shared(h, name='h')
     dw = T.dot(v.T,g) / M
     dv = T.dot(g.T,h) / M
-    dw.name = 'dw'
-    dv.name = 'dv'
+    da = T.mean(v, axis=0)
+    db = T.mean(g, axis=0)
+    dc = T.mean(h, axis=0)
 
     newgrads = lincg.linear_cg(
-            lambda xw, xv: natural.compute_Lx(vv,gg,hh,xw,xv),
-            [dw, dv],
-            rtol=1e-4,
-            maxit = 100,
+            lambda xw, xv, xa, xb, xc: natural.compute_Lx(vv,gg,hh,xw,xv,xa,xb,xc),
+            [dw, dv, da, db, dc],
+            rtol=1e-5,
+            maxit = 30,
             damp = 0.,
             floatX = floatX,
             profile=0)
+
     f = theano.function([], newgrads)
-    [new_dw, new_dv] = f()
-    import pdb; pdb.set_trace()
-    numpy.testing.assert_almost_equal(Linv_xw, new_dw, decimal=3)
-    numpy.testing.assert_almost_equal(Linv_xv, new_dv, decimal=3)
+    [new_dw, new_dv, new_da, new_db, new_dc] = f()
+    numpy.testing.assert_almost_equal(Linv_x_w, new_dw, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_v, new_dv, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_a, new_da, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_b, new_db, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_c, new_dc, decimal=1)
