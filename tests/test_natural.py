@@ -9,7 +9,7 @@ from DBM import minres
 from DBM import lincg
 
 rng = numpy.random.RandomState(92832)
-(M,N0,N1,N2) = (1000,3,4,5)
+(M,N0,N1,N2) = (256,3,4,5)
 v = rng.randint(low=0, high=2, size=(M,N0)).astype('float32')
 g = rng.randint(low=0, high=2, size=(M,N1)).astype('float32')
 h = rng.randint(low=0, high=2, size=(M,N2)).astype('float32')
@@ -95,9 +95,37 @@ Linv_x_b = Linv_x[N0*N1 + N1*N2 + N0 : N0*N1 + N1*N2 + N0 + N1]
 Linv_x_c = Linv_x[-N2:]
 
 
+def test_compute_Lx_batches():
+
+    ## now compare against theano version
+    vv = T.matrix()
+    gg = T.matrix()
+    hh = T.matrix()
+    aa = T.vector()
+    bb = T.vector()
+    cc = T.vector()
+    xxw_mat = T.matrix()
+    xxv_mat = T.matrix()
+    xxw = T.vector()
+    xxv = T.vector()
+    xxa = T.vector()
+    xxb = T.vector()
+    xxc = T.vector()
+
+    # test compute_Lx
+    LLx = natural.compute_Lx_batches(vv, gg, hh, xxw_mat, xxv_mat, xxa, xxb, xxc,
+                             256, 64)
+    f = theano.function([vv, gg, hh, xxw_mat, xxv_mat, xxa, xxb, xxc], LLx)
+    rvals = f(v, g, h, xw_mat, xv_mat, xa, xb, xc)
+    numpy.testing.assert_almost_equal(Lx_w, rvals[0], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_v, rvals[1], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_a, rvals[2], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_b, rvals[3], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_c, rvals[4], decimal=3)
+
 def test_compute_Lx():
 
-    ## now compare against theano version 
+    ## now compare against theano version
     vv = T.matrix()
     gg = T.matrix()
     hh = T.matrix()

@@ -31,6 +31,7 @@ class DBM(Model, Block):
             lr = 1e-3, lr_anneal_coeff=0, lr_timestamp=None, lr_mults = {},
             l1 = {}, l2 = {}, l1_inf={}, flags={},
             batch_size = 13,
+            computational_bs = 0,
             compile=True,
             seed=1241234,
             my_save_path=None, save_at=None, save_every=None):
@@ -56,6 +57,8 @@ class DBM(Model, Block):
         :param l2: same as l1, but for L2 regularization.
         :param l1_inf: same as l1, but the L1 penalty is centered as -\infty instead of 0.
         :param batch_size: size of positive and negative phase minibatch
+        :param computational_bs: batch size used internaly by natural
+               gradient to reduce memory consumption
         :param seed: seed used to initialize numpy and theano RNGs.
         :param my_save_path: if None, do not save model. Otherwise, contains stem of filename
                to which we will save the model (everything but the extension).
@@ -92,6 +95,7 @@ class DBM(Model, Block):
         self.psamples = []
         self.neg_ev = sharedX(self.rng.rand(batch_size, n_u[0]), name='neg_ev')
         self.input = T.matrix('input')
+        self.computational_bs = computational_bs
 
         # configure input-space (?new pylearn2 feature?)
         self.input_space = VectorSpace(n_u[0])
@@ -177,6 +181,7 @@ class DBM(Model, Block):
         minres_output = []
         if self.flags.get('enable_natural', False):
             minres_output = self.get_natural_direction(ml_cost, self.nsamples)
+
         learning_grads = utils_cost.compute_gradients(ml_cost, reg_cost)
 
         ##
@@ -486,6 +491,19 @@ class DBM(Model, Block):
         return utils_cost.Cost(cost, params)
 
     def get_natural_direction(self, ml_cost, nsamples):
+        """
+        Returns: list
+            See minres documentation for the meaning of each return value.
+            rvals[0]: flag
+            rvals[2]: niters 
+            rvals[3]: rel_residual
+            rvals[4]: rel_Aresidual 
+            rvals[5]: Anorm 
+            rvals[6]: Acond 
+            rvals[7]: xnorm
+            rvals[8]: Axnorm
+        """
+
         assert self.depth == 3
         inputs = [ml_cost.grads[self.W[1]],
                   ml_cost.grads[self.W[2]],
@@ -493,26 +511,35 @@ class DBM(Model, Block):
                   ml_cost.grads[self.bias[1]],
                   ml_cost.grads[self.bias[2]]]
 
-        def Lx_func(xw1, xw2, xbias0, xbias1, xbias2):
-            return natural.compute_Lx(
-                    self.nsamples[0],
-                    self.nsamples[1],
-                    self.nsamples[2],
-                    xw1, xw2, xbias0, xbias1, xbias2)
-            
-        minres_output = minres.minres(
+        if self.computational_bs > 0:
+            def Lx_func(xw1, xw2, xbias0, xbias1, xbias2):
+                return natural.compute_Lx_batches(
+                        self.nsamples[0],
+                        self.nsamples[1],
+                        self.nsamples[2],
+                        xw1, xw2, xbias0, xbias1, xbias2,
+                        self.force_batch_size, self.computational_bs)
+        else:
+            def Lx_func(xw1, xw2, xbias0, xbias1, xbias2):
+                return natural.compute_Lx(
+                        self.nsamples[0],
+                        self.nsamples[1],
+                        self.nsamples[2],
+                        xw1, xw2, xbias0, xbias1, xbias2)
+
+        rvals = minres.minres(
                 Lx_func,
                 inputs,
-                rtol=1e-5,
-                damp = 0.1,
-                maxit = 30,
+                rtol=1e-4,
+                damp = 0.01,
+                maxit = 80,
                 profile=0)
-        newgrads = minres_output[0]
 
+        newgrads = rvals[0]
         ml_cost.grads[self.W[1]] = newgrads[0]
         ml_cost.grads[self.W[2]] = newgrads[1]
         ml_cost.grads[self.bias[0]] = newgrads[2]
         ml_cost.grads[self.bias[1]] = newgrads[3]
         ml_cost.grads[self.bias[2]] = newgrads[4]
 
-        return minres_output[1:]
+        return rvals[1:]

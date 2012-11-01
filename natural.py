@@ -2,6 +2,7 @@ import numpy
 
 import theano
 import theano.tensor as T
+import theano.sandbox.scan
 floatX = theano.config.floatX
 
 def star_prod(s1, s2):
@@ -53,16 +54,52 @@ def compute_Lx_term2(v, g, h, xw, xv, xa, xb, xc):
              (Lv * rhs_term).reshape((N1, N2)) * M2inv,
              (La * rhs_term) * M2inv,
              (Lb * rhs_term) * M2inv,
-             (Lc * rhs_term)  * M2inv ]
+             (Lc * rhs_term) * M2inv ]
 
     return rval
 
 def compute_Lx(v, g, h, xw_mat, xv_mat, xa, xb, xc):
+     xw = xw_mat.flatten()
+     xv = xv_mat.flatten()
+     terms1 = compute_Lx_term1(v, g, h, xw, xv, xa, xb, xc)
+     terms2 = compute_Lx_term2(v, g, h, xw, xv, xa, xb, xc)
+     rval = []
+     for (term1, term2) in zip(terms1, terms2):
+         rval += [term1 - term2]
+     return rval
+
+def compute_Lx_batches(v, g, h, xw_mat, xv_mat, xa, xb, xc, bs, cbs):
     xw = xw_mat.flatten()
     xv = xv_mat.flatten()
-    terms1 = compute_Lx_term1(v, g, h, xw, xv, xa, xb, xc)
-    terms2 = compute_Lx_term2(v, g, h, xw, xv, xa, xb, xc)
-    rval = []
-    for (term1, term2) in zip(terms1, terms2):
-        rval += [term1 - term2]
-    return rval
+    tv = v.reshape((bs // cbs, cbs, v.shape[1]))
+    tg = g.reshape((bs // cbs, cbs, g.shape[1]))
+    th = h.reshape((bs // cbs, cbs, h.shape[1]))
+
+    final_w1 = T.unbroadcast(T.shape_padleft(T.zeros_like(xw_mat)),0)
+    final_v1 = T.unbroadcast(T.shape_padleft(T.zeros_like(xv_mat)),0)
+    final_a1 = T.unbroadcast(T.shape_padleft(T.zeros_like(xa)),0)
+    final_b1 = T.unbroadcast(T.shape_padleft(T.zeros_like(xb)),0)
+    final_c1 = T.unbroadcast(T.shape_padleft(T.zeros_like(xc)),0)
+    def comp_step(lv, lg, lh,
+                  acc_w1, acc_v1, acc_a1, acc_b1, acc_c1):
+        terms1 = compute_Lx_term1(lv, lg, lh, xw, xv, xa, xb, xc)
+        accs1 = [acc_w1, acc_v1, acc_a1, acc_b1, acc_c1]
+        rval = []
+
+        for (term1, acc) in zip(terms1,accs1):
+            rval += [acc + term1]
+        return rval
+    rvals,_ = theano.sandbox.scan.scan(
+        comp_step,
+        sequences=[tv,tg,th],
+        states=[
+            final_w1, final_v1, final_a1, final_b1, final_c1],
+        n_steps=bs // cbs,
+        profile=0,
+        mode=theano.Mode(linker='cvm_nogc'),
+        flags=['no_optimization'] )
+    accs1 = [x[0]/numpy.float32(bs//cbs) for x in rvals]
+    accs2 = compute_Lx_term2(v,g,h,xw,xv,xa,xb,xc)
+    return [x - y for x, y in zip(accs1, accs2)]
+
+
