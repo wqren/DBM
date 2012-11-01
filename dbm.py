@@ -19,6 +19,7 @@ from DBM import tools
 from DBM import cost as utils_cost
 from DBM import minres
 from DBM import natural
+from DBM import utils
 from DBM import sharedX, floatX, npy_floatX
 
 class DBM(Model, Block):
@@ -286,6 +287,8 @@ class DBM(Model, Block):
             print 'Saving to %s ...' %fname,
             serial.save(fname, self)
             print 'done'
+            # log GPU-memory usage
+            utils.print_mem()
 
         return True
 
@@ -308,7 +311,10 @@ class DBM(Model, Block):
         rval = self.batch_train_func(x)
         if self.flags.get('debug', False) and self.batches_seen%50 == 0:
             import pdb; pdb.set_trace()
-
+        if self.batches_seen%100 == 0:
+            fp = open('minres.log', 'a')
+            fp.write(str(rval) + '\n')
+            fp.close()
 
     def energy(self, samples, beta=1.0):
         """
