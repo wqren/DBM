@@ -312,8 +312,21 @@ class DBM(Model, Block):
         if self.flags.get('debug', False) and self.batches_seen%50 == 0:
             import pdb; pdb.set_trace()
         if self.batches_seen%100 == 0:
-            fp = open('minres.log', 'a')
-            fp.write(str(rval) + '\n')
+            if self.batches_seen == 0:
+                fp = open('minres.log', 'w')
+            else:
+                fp = open('minres.log', 'a')
+            fp.write('===================\n')
+            fp.write('Batches seen: %i\n' % self.batches_seen)
+            fp.write('flag: %i\n' % rval[0])
+            fp.write('niters: %i\n' % rval[1])
+            fp.write('rel_residual: %s\n' % str(rval[2]))
+            fp.write('rel_Aresidual: %s\n' % str(rval[3]))
+            fp.write('Anorm: %s\n' % str(rval[4]))
+            fp.write('Acond: %s\n' % str(rval[5]))
+            fp.write('xnor: %s\n' % str(rval[6]))
+            fp.write('Axnor: %s\n' % str(rval[7]))
+            fp.write('\n\n')
             fp.close()
 
     def energy(self, samples, beta=1.0):
