@@ -174,8 +174,9 @@ class DBM(Model, Block):
         ml_cost = self.ml_cost(new_psamples, self.nsamples)
         ml_cost.compute_gradients()
         reg_cost = self.get_reg_cost()
+        minres_output = []
         if self.flags.get('enable_natural', False):
-            self.get_natural_direction(ml_cost, self.nsamples)
+            minres_output = self.get_natural_direction(ml_cost, self.nsamples)
         learning_grads = utils_cost.compute_gradients(ml_cost, reg_cost)
 
         ##
@@ -188,7 +189,7 @@ class DBM(Model, Block):
         learning_updates.update(pos_updates)
       
         # build theano function to train on a single minibatch
-        self.batch_train_func = function([self.input], [],
+        self.batch_train_func = function([self.input], minres_output,
                 updates=learning_updates,
                 name='train_rbm_func',
                 profile=0)
@@ -250,7 +251,7 @@ class DBM(Model, Block):
 
         # First-layer biases of RBM-type models should always be initialized to the log-odds
         # ratio. This ensures that the weights don't attempt to learn the mean.
-        if self.batches_seen == 0:
+        if self.flags.get('mlbiases', False) and self.batches_seen == 0:
             mean_x = numpy.mean(dataset.X, axis=0)
             clip_x = numpy.clip(mean_x, 1e-5, 1-1e-5)
             self.bias[0].set_value(numpy.log(clip_x / (1. - clip_x)))
@@ -299,7 +300,9 @@ class DBM(Model, Block):
         self.sample_neg_func()
 
         # update parameters
-        self.batch_train_func(x)
+        rval = self.batch_train_func(x)
+        if self.flags.get('debug', False) and self.batches_seen%50 == 0:
+            import pdb; pdb.set_trace()
 
 
     def energy(self, samples, beta=1.0):
@@ -497,16 +500,19 @@ class DBM(Model, Block):
                     self.nsamples[2],
                     xw1, xw2, xbias0, xbias1, xbias2)
             
-        newgrads = minres.minres(
+        minres_output = minres.minres(
                 Lx_func,
                 inputs,
                 rtol=1e-5,
                 damp = 0.1,
                 maxit = 30,
-                profile=0)[0]
+                profile=0)
+        newgrads = minres_output[0]
 
         ml_cost.grads[self.W[1]] = newgrads[0]
         ml_cost.grads[self.W[2]] = newgrads[1]
         ml_cost.grads[self.bias[0]] = newgrads[2]
         ml_cost.grads[self.bias[1]] = newgrads[3]
         ml_cost.grads[self.bias[2]] = newgrads[4]
+
+        return minres_output[1:]
