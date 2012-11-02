@@ -31,6 +31,7 @@ class DBM(Model, Block):
             pos_mf_steps=1, neg_sample_steps=1, 
             lr = 1e-3, lr_anneal_coeff=0, lr_timestamp=None, lr_mults = {},
             l1 = {}, l2 = {}, l1_inf={}, flags={},
+            minres_params = {},
             batch_size = 13,
             computational_bs = 0,
             compile=True,
@@ -57,6 +58,7 @@ class DBM(Model, Block):
                hyper-parameters controlling degree of L1-regularization.
         :param l2: same as l1, but for L2 regularization.
         :param l1_inf: same as l1, but the L1 penalty is centered as -\infty instead of 0.
+        :param minres_params: dictionary with keys ['rtol','damp','maxit']
         :param batch_size: size of positive and negative phase minibatch
         :param computational_bs: batch size used internaly by natural
                gradient to reduce memory consumption
@@ -549,9 +551,9 @@ class DBM(Model, Block):
         rvals = minres.minres(
                 Lx_func,
                 inputs,
-                rtol=1e-4,
-                damp = 0.01,
-                maxit = 80,
+                rtol = self.minres_params['rtol'],
+                damp = self.minres_params['damp'],
+                maxit = self.minres_params['maxit'],
                 profile=0)
 
         newgrads = rvals[0]
