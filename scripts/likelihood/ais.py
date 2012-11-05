@@ -106,7 +106,7 @@ def free_energy_at_beta(h1_sample, beta, h1bias_a=None):
     Symbolic variable, free-energy of sample `h1_sample`, at inv. temp beta.
     """
     layer0_temp = model.bias[0] + T.dot(h1_sample, model.W[1].T)
-    layer2_temp = model.bias[2] + T.dot(h1_sample, model.W[2].T)
+    layer2_temp = model.bias[2] + T.dot(h1_sample, model.W[2])
     fe_bp_h1  = - T.sum(T.nnet.softplus(beta * layer0_temp), axis=1) \
                 - T.sum(T.nnet.softplus(beta * layer2_temp), axis=1) \
                 - T.dot(h1_sample, model.bias[1]) * beta \
@@ -180,11 +180,11 @@ def estimate_from_weights(log_ais_w):
     return dlogz, var_dlogz
 
 
-def compute_log_za(model):
+def compute_log_za(pa_h1_bias):
     """
     Compute the exact partition function of model p_A(h1).
     """
-    log_za = numpy.sum(numpy.log(1 + numpy.exp(model.bias[1].get_value())))
+    log_za = numpy.sum(numpy.log(1 + numpy.exp(pa_h1_bias)))
     log_za += model.n_u[0] * numpy.log(2)
     log_za += model.n_u[2] * numpy.log(2)
     return log_za
@@ -246,7 +246,7 @@ def compute_test_set_likelihood(model, energy_fn, inference_fn, log_z, test_x):
         # divide by len(x) and not bufsize, since last buffer might be smaller
         likelihood = (i * likelihood + x_likelihood) / (i + len(x))
 
-    return -likelihood
+    return likelihood
 
 
 def main(model, data):
@@ -270,7 +270,7 @@ def main(model, data):
     ## BUILD THEANO FUNCTIONS
     ##########################
     beta = T.scalar()
-
+    
     # Build function to retrieve energy.
     E = model.energy(model.nsamples, beta)
     energy_fn = theano.function([beta], E)
@@ -283,11 +283,9 @@ def main(model, data):
     temp = numpy.asarray(data.X, dtype=floatX)
     mean_data = numpy.mean(temp, axis=0)
     psamples = inference_fn(mean_data[None,:])
-    h1_input = numpy.dot(mean_data, model.W[1].get_value()) +\
-               numpy.dot(psamples[2], model.W[2].get_value().T)
-    h1_input = numpy.minimum(h1_input, 1-1e-5)
-    h1_input = numpy.maximum(h1_input, 1e-5)
-    h1bias_a = -numpy.log(1./h1_input[0] - 1.)
+    mean_pos_h1 = numpy.minimum(psamples[1], 1-1e-5)
+    mean_pos_h1 = numpy.maximum(mean_pos_h1, 1e-5)
+    h1bias_a = -numpy.log(1./mean_pos_h1[0] - 1.)
 
     # Build Theano function to sample from interpolating distributions.
     updates = {}
@@ -307,7 +305,8 @@ def main(model, data):
 
     # Generate exact sample for the base model.
     for i, nsample_i in enumerate(model.nsamples):
-        hi_mean_vec = 1. / (1. + numpy.exp(-model.bias[i].get_value()))
+        bias = h1bias_a if i==1 else model.bias[i].get_value()
+        hi_mean_vec = 1. / (1. + numpy.exp(-bias))
         hi_mean = numpy.tile(hi_mean_vec, (model.batch_size, 1))
         r = numpy.random.random_sample(hi_mean.shape)
         hi_sample = numpy.array(hi_mean > r, dtype=floatX)
@@ -322,7 +321,7 @@ def main(model, data):
 
     log_ais_w = compute_log_ais_weights(free_energy_fn, sample_fn, betas)
     dlogz, var_dlogz = estimate_from_weights(log_ais_w)
-    log_za = compute_log_za(model)
+    log_za = compute_log_za(h1bias_a)
     log_z = log_za + dlogz
     logging.info('log_z = %f' % log_z)
     logging.info('log_za = %f' % log_za)
