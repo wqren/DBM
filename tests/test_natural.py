@@ -150,7 +150,241 @@ def test_compute_Lx():
     numpy.testing.assert_almost_equal(Lx_b, rvals[3], decimal=3)
     numpy.testing.assert_almost_equal(Lx_c, rvals[4], decimal=3)
 
- 
+def test_math():
+    """
+    A hand-unrolled implementation of the math in 2012/dbm_natural/math.lyx.
+    We compare against the L matrix which is computed more efficiently above,
+    using dot and Khatri-Rao products. L is then compared to our theano
+    implementation of L in test_compute_Lx.
+    """
+    # second, dummy implementation of L
+    N = N0*N1 + N1*N2 + N0 + N1 + N2
+
+    EL = numpy.zeros((N,N))
+
+    idx = {}
+    idx.update({'ws': 0, 'we': N0*N1})
+    idx.update({'vs': idx['we'], 've': idx['we'] + N1*N2})
+    idx.update({'as': idx['ve'], 'ae': idx['ve'] + N0})
+    idx.update({'bs': idx['ae'], 'be': idx['ae'] + N1})
+    idx.update({'cs': idx['be'], 'ce': idx['be'] + N2})
+
+    dW = numpy.dot(v.T, g) / M
+    dV = numpy.dot(g.T, h) / M
+    da = numpy.mean(v, axis=0)
+    db = numpy.mean(g, axis=0)
+    dc = numpy.mean(h, axis=0)
+
+    # WW block
+    for i in xrange(N0):
+        for j in xrange(N1):
+            r = i*N1 + j
+            for k in xrange(N0):
+                for l in xrange(N1):
+                    c = k*N1 + l
+                    EL[r, c] = 0
+                    for z in xrange(M):
+                        EL[r, c] += v[z,i] * g[z,j] * v[z,k] * g[z,l] - dW[i,j] * dW[k,l]
+                    EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['ws']:idx['we'], idx['ws']:idx['we']],
+                                      EL[idx['ws']:idx['we'], idx['ws']:idx['we']],
+                                      decimal=3)
+
+    # WV block
+    for i in xrange(N0):
+        for j in xrange(N1):
+            r = i*N1 + j
+            for k in xrange(N1):
+                for l in xrange(N2):
+                    c = N0*N1 + k*N2 + l
+                    EL[r, c] = 0
+                    for z in xrange(M):
+                        EL[r, c] += v[z,i] * g[z,j] * g[z,k] * h[z,l] - dW[i,j] * dV[k,l]
+                    EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['ws']:idx['we'], idx['vs']:idx['ve']],
+                                      EL[idx['ws']:idx['we'], idx['vs']:idx['ve']],
+                                      decimal=3)
+
+    # Wa block
+    for i in xrange(N0):
+        for j in xrange(N1):
+            r = i*N1 + j
+            for k in xrange(N0):
+                c = N0*N1 + N1*N2 + k
+                EL[r, c] = 0
+                for z in xrange(M):
+                    EL[r, c] += v[z,i] * g[z,j] * v[z,k] - dW[i,j] * da[k]
+                EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['ws']:idx['we'], idx['as']:idx['ae']],
+                                      EL[idx['ws']:idx['we'], idx['as']:idx['ae']],
+                                      decimal=3)
+
+    # Wb block
+    for i in xrange(N0):
+        for j in xrange(N1):
+            r = i*N1 + j
+            for k in xrange(N1):
+                c = N0*N1 + N1*N2 + N0 + k
+                EL[r, c] = 0
+                for z in xrange(M):
+                    EL[r, c] += v[z,i] * g[z,j] * g[z,k] - dW[i,j] * db[k]
+                EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['ws']:idx['we'], idx['bs']:idx['be']],
+                                      EL[idx['ws']:idx['we'], idx['bs']:idx['be']],
+                                      decimal=3)
+    # Wc block
+    for i in xrange(N0):
+        for j in xrange(N1):
+            r = i*N1 + j
+            for k in xrange(N2):
+                c = N0*N1 + N1*N2 + N0 + N1 + k
+                EL[r, c] = 0
+                for z in xrange(M):
+                    EL[r, c] += v[z,i] * g[z,j] * h[z,k] - dW[i,j] * dc[k]
+                EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['ws']:idx['we'], idx['cs']:idx['ce']],
+                                      EL[idx['ws']:idx['we'], idx['cs']:idx['ce']],
+                                      decimal=3)
+    # VV block
+    for i in xrange(N1):
+        for j in xrange(N2):
+            r = N0*N1 + i*N2 + j
+            for k in xrange(N1):
+                for l in xrange(N2):
+                    c = N0*N1 + k*N2 + l
+                    EL[r, c] = 0
+                    for z in xrange(M):
+                        EL[r, c] += g[z,i] * h[z,j] * g[z,k] * h[z,l] - dV[i,j] * dV[k,l]
+                    EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['vs']:idx['ve'], idx['vs']:idx['ve']],
+                                      EL[idx['vs']:idx['ve'], idx['vs']:idx['ve']],
+                                      decimal=3)
+    # Va block
+    for i in xrange(N1):
+        for j in xrange(N2):
+            r = N0*N1 + i*N2 + j
+            for k in xrange(N0):
+                c = N0*N1 + N1*N2 + k
+                EL[r, c] = 0
+                for z in xrange(M):
+                    EL[r, c] += g[z,i] * h[z,j] * v[z,k] - dV[i,j] * da[k]
+                EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['vs']:idx['ve'], idx['as']:idx['ae']],
+                                      EL[idx['vs']:idx['ve'], idx['as']:idx['ae']],
+                                      decimal=3)
+    # Vb block
+    for i in xrange(N1):
+        for j in xrange(N2):
+            r = N0*N1 + i*N2 + j
+            for k in xrange(N1):
+                c = N0*N1 + N1*N2 + N0 + k
+                EL[r, c] = 0
+                for z in xrange(M):
+                    EL[r, c] += g[z,i] * h[z,j] * g[z,k] - dV[i,j] * db[k]
+                EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['vs']:idx['ve'], idx['bs']:idx['be']],
+                                      EL[idx['vs']:idx['ve'], idx['bs']:idx['be']],
+                                      decimal=3)
+    # Vc block
+    for i in xrange(N1):
+        for j in xrange(N2):
+            r = N0*N1 + i*N2 + j
+            for k in xrange(N2):
+                c = N0*N1 + N1*N2 + N0 + N1 + k
+                EL[r, c] = 0
+                for z in xrange(M):
+                    EL[r, c] += g[z,i] * h[z,j] * h[z,k] - dV[i,j] * dc[k]
+                EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['vs']:idx['ve'], idx['cs']:idx['ce']],
+                                      EL[idx['vs']:idx['ve'], idx['cs']:idx['ce']],
+                                      decimal=3)
+    # aa block
+    for i in xrange(N0):
+        r = N0*N1 + N1*N2 + i
+        for k in xrange(N0):
+            c = N0*N1 + N1*N2 + k
+            EL[r, c] = 0
+            for z in xrange(M):
+                EL[r, c] += v[z,i] * v[z,k] - da[i] * da[k]
+            EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['as']:idx['ae'], idx['as']:idx['ae']],
+                                      EL[idx['as']:idx['ae'], idx['as']:idx['ae']],
+                                      decimal=3)
+    # ab block
+    for i in xrange(N0):
+        r = N0*N1 + N1*N2 + i
+        for k in xrange(N1):
+            c = N0*N1 + N1*N2 + N0 + k
+            EL[r, c] = 0
+            for z in xrange(M):
+                EL[r, c] += v[z,i] * g[z,k] - da[i] * db[k]
+            EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['as']:idx['ae'], idx['bs']:idx['be']],
+                                      EL[idx['as']:idx['ae'], idx['bs']:idx['be']],
+                                      decimal=3)
+    # ac block
+    for i in xrange(N0):
+        r = N0*N1 + N1*N2 + i
+        for k in xrange(N2):
+            c = N0*N1 + N1*N2 + N0 + N1 + k
+            EL[r, c] = 0
+            for z in xrange(M):
+                EL[r, c] += v[z,i] * h[z,k] - da[i] * dc[k]
+            EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['as']:idx['ae'], idx['cs']:idx['ce']],
+                                      EL[idx['as']:idx['ae'], idx['cs']:idx['ce']],
+                                      decimal=3)
+    # bb block
+    for i in xrange(N1):
+        r = N0*N1 + N1*N2 + N0 + i
+        for k in xrange(N1):
+            c = N0*N1 + N1*N2 + N0 + k
+            EL[r, c] = 0
+            for z in xrange(M):
+                EL[r, c] += g[z,i] * g[z,k] - db[i] * db[k]
+            EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['bs']:idx['be'], idx['bs']:idx['be']],
+                                      EL[idx['bs']:idx['be'], idx['bs']:idx['be']],
+                                      decimal=3)
+    # bc block
+    for i in xrange(N1):
+        r = N0*N1 + N1*N2 + N0 + i
+        for k in xrange(N2):
+            c = N0*N1 + N1*N2 + N0 + N1 + k
+            EL[r, c] = 0
+            for z in xrange(M):
+                EL[r, c] += g[z,i] * h[z,k] - db[i] * dc[k]
+            EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['bs']:idx['be'], idx['cs']:idx['ce']],
+                                      EL[idx['bs']:idx['be'], idx['cs']:idx['ce']],
+                                      decimal=3)
+    # cc block
+    for i in xrange(N2):
+        r = N0*N1 + N1*N2 + N0 + N1 + i
+        for k in xrange(N2):
+            c = N0*N1 + N1*N2 + N0 + N1 + k
+            EL[r, c] = 0
+            for z in xrange(M):
+                EL[r, c] += h[z,i] * h[z,k] - dc[i] * dc[k]
+            EL[r,c] /= M
+    numpy.testing.assert_almost_equal( L[idx['cs']:idx['ce'], idx['cs']:idx['ce']],
+                                      EL[idx['cs']:idx['ce'], idx['cs']:idx['ce']],
+                                      decimal=3)
+
+    # make matrix symmetric
+    EL[idx['vs']:idx['ve'], idx['ws']:idx['we']] = EL[idx['ws']:idx['we'], idx['vs']:idx['ve']].T
+    EL[idx['as']:idx['ae'], idx['ws']:idx['we']] = EL[idx['ws']:idx['we'], idx['as']:idx['ae']].T
+    EL[idx['as']:idx['ae'], idx['vs']:idx['ve']] = EL[idx['vs']:idx['ve'], idx['as']:idx['ae']].T
+    EL[idx['bs']:idx['be'], idx['ws']:idx['we']] = EL[idx['ws']:idx['we'], idx['bs']:idx['be']].T
+    EL[idx['bs']:idx['be'], idx['vs']:idx['ve']] = EL[idx['vs']:idx['ve'], idx['bs']:idx['be']].T
+    EL[idx['bs']:idx['be'], idx['as']:idx['ae']] = EL[idx['as']:idx['ae'], idx['bs']:idx['be']].T
+    EL[idx['cs']:idx['ce'], idx['ws']:idx['we']] = EL[idx['ws']:idx['we'], idx['cs']:idx['ce']].T
+    EL[idx['cs']:idx['ce'], idx['vs']:idx['ve']] = EL[idx['vs']:idx['ve'], idx['cs']:idx['ce']].T
+    EL[idx['cs']:idx['ce'], idx['as']:idx['ae']] = EL[idx['as']:idx['ae'], idx['cs']:idx['ce']].T
+    EL[idx['cs']:idx['ce'], idx['bs']:idx['be']] = EL[idx['bs']:idx['be'], idx['cs']:idx['ce']].T
+    numpy.testing.assert_almost_equal(L, EL, decimal=3)
+
+
 def test_minres():
     vv = theano.shared(v, name='v')
     gg = theano.shared(g, name='g')
@@ -171,7 +405,6 @@ def test_minres():
 
     f = theano.function([], newgrads)
     [new_dw, new_dv, new_da, new_db, new_dc] = f()
-    import pdb; pdb.set_trace()
     numpy.testing.assert_almost_equal(Linv_x_w, new_dw, decimal=1)
     numpy.testing.assert_almost_equal(Linv_x_v, new_dv, decimal=1)
     numpy.testing.assert_almost_equal(Linv_x_a, new_da, decimal=1)
