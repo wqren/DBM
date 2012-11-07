@@ -8,6 +8,7 @@ import theano.tensor as T
 from theano.printing import Print
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from theano import function, shared
+from theano.sandbox.scan import scan
 
 from pylearn2.training_algorithms import default
 from pylearn2.utils import serial
@@ -28,7 +29,7 @@ class DBM(Model, Block):
 
     def __init__(self, input = None, n_u=[100,100], enable={},
             iscales=None, clip_min={}, clip_max={},
-            pos_mf_steps=1, neg_sample_steps=1, 
+            pos_mf_steps=1, pos_sample_steps=0, neg_sample_steps=1, 
             lr = 1e-3, lr_anneal_coeff=0, lr_timestamp=None, lr_mults = {},
             l1 = {}, l2 = {}, l1_inf={}, flags={},
             minres_params = {},
@@ -36,6 +37,7 @@ class DBM(Model, Block):
             computational_bs = 0,
             compile=True,
             seed=1241234,
+            sp_targ_h = None, sp_weight_h=None, sp_pos_k = 5,
             my_save_path=None, save_at=None, save_every=None):
         """
         :param n_u: list, containing number of units per layer. n_u[0] contains number
@@ -94,10 +96,10 @@ class DBM(Model, Block):
         # allocate bilinear-weight matrices
         self.W = []
         self.bias = []
-        self.nsamples = []
         self.psamples = []
+        self.nsamples = []
+        self.input = T.matrix()
         self.neg_ev = sharedX(self.rng.rand(batch_size, n_u[0]), name='neg_ev')
-        self.input = T.matrix('input')
         self.computational_bs = computational_bs
 
         # configure input-space (?new pylearn2 feature?)
@@ -107,21 +109,22 @@ class DBM(Model, Block):
         for i, nui in enumerate(n_u):
 
             self.bias += [sharedX(iscales['bias%i' %i] * numpy.ones(nui), name='bias%i'%i)]
+            self.psamples += [sharedX(self.rng.rand(batch_size, nui), name='psamples%i'%i)]
             self.nsamples += [sharedX(self.rng.rand(batch_size, nui), name='nsamples%i'%i)]
-
-            # parameter to keep track of biases
 
             if i > 0: 
                 # declarate weight matrix and storage for positive phase statistics
-                self.psamples += [sharedX(self.rng.rand(batch_size, nui), name='psamples%i'%i)]
                 # weight matrix for each layer
                 wv_val  = self.rng.randn(n_u[i-1], n_u[i]) * iscales.get('W%i'%i,1.0)
                 self.W += [sharedX(wv_val, name='W%i' % i)]
             else:
-                # define symbolic input, to serve as theano function input
-                self.psamples += [self.input]
-                self.input = self.psamples[0]
                 self.W += [None]
+
+        # debugging
+        self.log = {'grad_w1': sharedX(self.W[1].get_value(), name=''),
+                    'grad_w2': sharedX(self.W[2].get_value(), name=''),
+                    'natgrad_w1': sharedX(self.W[1].get_value(), name=''),
+                    'natgrad_w2': sharedX(self.W[2].get_value(), name='')}
 
         # learning rate - implemented as shared parameter for GPU
         self.lr_shrd = sharedX(lr, name='lr_shrd')
@@ -157,34 +160,39 @@ class DBM(Model, Block):
         ###### All fields you don't want to get pickled (e.g., theano functions) should be created below this line
 
         ###
+        # POSITIVE PHASE ESTEP
+        ###
+        if self.pos_mf_steps:
+            assert self.pos_sample_steps == 0
+            new_psamples = self.e_step(self.input, n_steps=self.pos_mf_steps)
+        else:
+            new_psamples = self.pos_sampling(self.input, n_steps=self.pos_sample_steps)
+        pos_updates = self.e_step_updates(new_psamples)
+        self.pos_func = function([self.input], [], updates=pos_updates,
+                                 name='pos_func', profile=0)
+
+        ###
         # SAMPLING: NEGATIVE PHASE
         ###
-        new_nsamples = self.neg_sampling(self.nsamples, n_steps=self.neg_sample_steps)
+        new_nsamples = self.neg_sampling(self.nsamples)
         new_ev = self.hi_given(new_nsamples, 0)
         neg_updates = {self.neg_ev: new_ev}
         for (nsample, new_nsample) in zip(self.nsamples, new_nsamples):
             neg_updates[nsample] = new_nsample
-        self.sample_neg_func = function([], [],
-                updates=neg_updates,
-                name='sample_neg_func',
-                profile=0)
+        self.sample_neg_func = function([], [], updates=neg_updates,
+                                        name='sample_neg_func', profile=0)
 
         ###
-        # POSITIVE PHASE ESTEP + LEARNING
+        # SML LEARNING
         ###
-        pos_updates = {}
-
-        new_psamples = self.e_step(self.psamples, n_steps=self.pos_mf_steps)
-        for (psample, new_psample) in zip(self.psamples[1:], new_psamples[1:]):
-            pos_updates[psample] = new_psample
-
-        ml_cost = self.ml_cost(new_psamples, self.nsamples)
+        ml_cost = self.ml_cost(self.psamples, self.nsamples)
         ml_cost.compute_gradients()
         reg_cost = self.get_reg_cost()
+        #sp_cost = self.get_sparsity_cost()
         minres_output = []
+        natgrad_updates = {}
         if self.flags.get('enable_natural', False):
-            minres_output = self.get_natural_direction(ml_cost, self.nsamples)
-
+            minres_output, natgrad_updates = self.get_natural_direction(ml_cost, self.nsamples)
         learning_grads = utils_cost.compute_gradients(ml_cost, reg_cost)
 
         ##
@@ -194,10 +202,10 @@ class DBM(Model, Block):
                 learning_grads,
                 self.lr_shrd,
                 multipliers = self.lr_mults_shrd) 
-        learning_updates.update(pos_updates)
+        learning_updates.update(natgrad_updates)
       
         # build theano function to train on a single minibatch
-        self.batch_train_func = function([self.input], minres_output,
+        self.batch_train_func = function([], minres_output,
                 updates=learning_updates,
                 name='train_rbm_func',
                 profile=0)
@@ -230,24 +238,6 @@ class DBM(Model, Block):
         # Before we start learning, make sure constraints are enforced
         self.enforce_constraints()
 
-    def set_batch_size(self, batch_size):
-        """
-        Change the batch size of a model which has already been initialized.
-        :param batch_size: int. new batch size.
-        """
-        self.neg_ev = sharedX(self.rng.rand(batch_size, self.n_u[0]), name='neg_ev')
-        self.psamples = []
-        self.nsamples = []
-
-        for i, nui in enumerate(self.n_u):
-            self.nsamples += [sharedX(self.rng.rand(batch_size, nui), name='nsamples%i'%i)]
-            if i > 0:
-                self.psamples += [sharedX(self.rng.rand(batch_size, nui), name='psamples%i'%i)]
-            else:
-                self.psamples += [self.input]
-
-        self.force_batch_size = batch_size       # force minibatch size
-        self.do_theano()
 
     def train_batch(self, dataset, batch_size):
         """
@@ -306,14 +296,14 @@ class DBM(Model, Block):
         # anneal learning rate
         self.lr_shrd.set_value(self.lr / (1. + self.lr_anneal_coeff * self.batches_seen))
 
-        # perform negative phase sampling
-        self.sample_neg_func()
+        # perform variational/sampling positive phase
+        self.pos_func(x)
+        for i in xrange(self.neg_sample_steps):
+            self.sample_neg_func()
+        rval = self.batch_train_func()
 
-        # update parameters
-        rval = self.batch_train_func(x)
-        if self.flags.get('debug', False) and self.batches_seen%50 == 0:
-            import pdb; pdb.set_trace()
-        if self.batches_seen%100 == 0:
+        ### LOGGING & DEBUGGING ###
+        if self.flags.get('enable_natural', False) and self.batches_seen%1 == 0:
             if self.batches_seen == 0:
                 fp = open('minres.log', 'w')
             else:
@@ -399,45 +389,85 @@ class DBM(Model, Block):
     # SAMPLING STUFF #
     ##################
 
-    def e_step(self, psamples, n_steps=5):
+    def pos_sampling(self, v, n_steps=50):
         """
         Performs `n_steps` of mean-field inference (used to compute positive phase statistics).
         :param psamples: list of tensor-like objects, representing the state of each layer of
         the DBM (during the inference process). psamples[0] points to self.input.
         :param n_steps: number of iterations of mean-field to perform.
         """
-        v = psamples[0]
-
-        # initialize hidden layers
-        new_psamples = [psamples[0]] + [None for i in xrange(1,self.depth)]
-        for i in xrange(1,self.depth):
-            new_psamples[i] = T.ones((v.shape[0],self.n_u[i]))
+        new_psamples = []
+        for i in xrange(0,self.depth):
+            layer = T.fill(self.psamples[i], 1.) if i > 0 else v
+            new_psamples += [T.unbroadcast(T.shape_padleft(layer))]
 
         # now alternate mean-field inference for even/odd layers
-        for si in xrange(n_steps):
+        def sample_iteration(*psamples):
+            new_psamples = [p for p in psamples]
             for i in xrange(1,self.depth,2):
-                new_psamples[i] = self.hi_given(new_psamples, i)
+                new_psamples[i] = self.sample_hi_given(psamples, i)
             for i in xrange(2,self.depth,2):
-                new_psamples[i] = self.hi_given(new_psamples, i)
+                new_psamples[i] = self.sample_hi_given(psamples, i)
+            return new_psamples
 
-        return new_psamples
+        new_psamples, updates = scan(
+                sample_iteration,
+                states = new_psamples,
+                n_steps=n_steps)
 
-    def neg_sampling(self, nsamples, n_steps, beta=1.0):
+        return [x[0] for x in new_psamples]
+
+    def e_step(self, v, n_steps=100, eps=1e-5):
+        """
+        Performs `n_steps` of mean-field inference (used to compute positive phase statistics).
+        :param psamples: list of tensor-like objects, representing the state of each layer of
+        the DBM (during the inference process). psamples[0] points to self.input.
+        :param n_steps: number of iterations of mean-field to perform.
+        """
+        new_psamples = []
+        for i in xrange(0,self.depth):
+            layer = T.fill(self.psamples[i], 1.) if i > 0 else v
+            new_psamples += [T.unbroadcast(T.shape_padleft(layer))]
+
+        # now alternate mean-field inference for even/odd layers
+        def mf_iteration(*psamples):
+            new_psamples = [p for p in psamples]
+            for i in xrange(1,self.depth,2):
+                new_psamples[i] = self.hi_given(psamples, i)
+            for i in xrange(2,self.depth,2):
+                new_psamples[i] = self.hi_given(psamples, i)
+
+            score = 0.
+            for i in xrange(1, self.depth):
+                score = T.maximum(T.mean(abs(new_psamples[i] - psamples[i])), score)
+
+            return new_psamples, theano.scan_module.until(score < eps)
+
+        new_psamples, updates = scan(
+                mf_iteration,
+                states = new_psamples,
+                n_steps=n_steps)
+
+        return [x[0] for x in new_psamples]
+
+    def e_step_updates(self, new_psamples):
+        updates = {}
+        for (new_psample, psample) in zip(new_psamples, self.psamples):
+            updates[psample] = new_psample
+        return updates
+
+    def neg_sampling(self, nsamples, beta=1.0):
         """
         Perform `n_steps` of block-Gibbs sampling (used to compute negative phase statistics).
         This method alternates between sampling of odd given even layers, and vice-versa.
         :param nsamples: list (of length len(self.n_u)) of tensor-like objects, representing
         the state of the persistent chain associated with layer i.
         """
-
         new_nsamples = [nsamples[i] for i in xrange(self.depth)]
-
-        for si in xrange(n_steps):
-            for i in xrange(1,self.depth,2):
-                new_nsamples[i] = self.sample_hi_given(new_nsamples, i, beta)
-            for i in xrange(0,self.depth,2):
-                new_nsamples[i] = self.sample_hi_given(new_nsamples, i, beta)
-
+        for i in xrange(1,self.depth,2):
+            new_nsamples[i] = self.sample_hi_given(new_nsamples, i, beta)
+        for i in xrange(0,self.depth,2):
+            new_nsamples[i] = self.sample_hi_given(new_nsamples, i, beta)
         return new_nsamples
 
     def ml_cost(self, psamples, nsamples):
@@ -453,7 +483,6 @@ class DBM(Model, Block):
 
         cte = psamples + nsamples
         return utils_cost.Cost(cost, self.params, cte)
-
 
     def monitor_stats(self, b, axis=(0,1), name=None, track_min=True, track_max=True):
         if name is None: assert hasattr(b, 'name')
@@ -474,15 +503,46 @@ class DBM(Model, Block):
 
         for i in xrange(1, self.depth):
             chans.update(self.monitor_stats(self.W[i]))
-            chans.update(self.monitor_stats(self.psamples[i]))
             norm_wi = T.sqrt(T.sum(self.W[i]**2, axis=0))
             chans.update(self.monitor_stats(norm_wi, axis=(0,), name='norm_w%i'%i))
 
+        def normalize(x):
+            return x / T.sqrt(T.sum(x**2))
+
+        w1_cos = T.dot(normalize(self.log['grad_w1'].flatten()),
+                       normalize(self.log['natgrad_w1'].flatten()))
+        w2_cos = T.dot(normalize(self.log['grad_w2'].flatten()),
+                       normalize(self.log['natgrad_w2'].flatten()))
+        chans['w1_cos_err'] = w1_cos
+        chans['w2_cos_err'] = w2_cos
+ 
         return chans
 
     ##############################
     # GENERIC OPTIMIZATION STUFF #
     ##############################
+    """
+    def get_sparsity_cost(self):
+
+        # update mean activation using exponential moving average
+        posh = self.e_step(self.psamples, self.sp_pos_k)
+
+        # define loss based on value of sp_type
+        eps = 1./self.batch_size
+        loss = lambda targ, val: - targ * T.log(eps + val) - (1.-targ) * T.log(1. - val + eps)
+
+        cost = T.zeros((), dtype=floatX)
+        params = []
+        if self.sp_weight_h:
+            for (i, poshi) in enumerate(posh):
+                cost += self.sp_weight_h  * T.sum(loss(self.sp_targ_h, poshi.mean(axis=0)))
+                if self.W[i]: params += [self.W[i]]
+                if self.bias[i]: params += [self.bias[i]]
+
+        return utils_cost.Cost(cost, params)
+    """
+
+
     def get_reg_cost(self):
         """
         Builds the symbolic expression corresponding to first-order gradient descent
@@ -557,10 +617,20 @@ class DBM(Model, Block):
                 profile=0)
 
         newgrads = rvals[0]
+
+        # Store for debugging.
+        updates = {}
+        updates[self.log['grad_w1']] = ml_cost.grads[self.W[1]]
+        updates[self.log['grad_w2']] = ml_cost.grads[self.W[2]]
+
+        # Now replace grad with natural gradient.
         ml_cost.grads[self.W[1]] = newgrads[0]
         ml_cost.grads[self.W[2]] = newgrads[1]
         ml_cost.grads[self.bias[0]] = newgrads[2]
         ml_cost.grads[self.bias[1]] = newgrads[3]
         ml_cost.grads[self.bias[2]] = newgrads[4]
+        
+        updates[self.log['natgrad_w1']] = newgrads[0]
+        updates[self.log['natgrad_w2']] = newgrads[1]
 
-        return rvals[1:]
+        return rvals[1:], updates
