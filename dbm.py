@@ -303,7 +303,7 @@ class DBM(Model, Block):
         rval = self.batch_train_func()
 
         ### LOGGING & DEBUGGING ###
-        if self.flags.get('enable_natural', False) and self.batches_seen%1 == 0:
+        if self.flags.get('enable_natural', False) and self.batches_seen%100 == 0:
             if self.batches_seen == 0:
                 fp = open('minres.log', 'w')
             else:
