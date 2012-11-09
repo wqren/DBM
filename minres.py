@@ -1,3 +1,4 @@
+import copy
 import theano
 import theano.tensor as TT
 from theano.ifelse import ifelse
@@ -119,13 +120,13 @@ def minres(compute_Av,
            maxxnorm=numpy.float32(1e15),
            Acondlim=numpy.float32(1e16),
            mode = None,
+           xinit = None,
            profile=0):
     """
      DESCRIPTION:
          minres attempts to find the minimum-length and minimum-residual-norm
          solution x to the system of linear equations A*x = b or
-         least squares problem min||Ax-b||.  The n-by-n coefficient matrix A
-         must be symmetric (but need not be positive definite or invertible).
+         least squares problem min||Ax-b||.  The n-by-n coefficient matrix A must be symmetric (but need not be positive definite or invertible).
          The right-hand-side column vector b must have length n.
 
      INPUTS:
@@ -141,11 +142,10 @@ def minres(compute_Av,
             method uses these to precondition with diag(Ms)
         :param damp: Optional, scalar, real or complex.  Default is 0.
                    Effectively solve the system (A + damp I) * x = b.
-        maxxnorm   real positive, maximum bound on NORM(x). Default is 1e14.
-        Acondlim   real positive, maximum bound on COND(A). Default is 1e15.
-        show       boolean, 0 to suppress outputs, 1 to show iterations.
-                   Default is 0.
-        p1, p2,... Optional, inputs to A and M if they are functions
+        :param maxxnorm: real positive, maximum bound on NORM(x). Default is 1e14.
+        :param Acondlim: real positive, maximum bound on COND(A). Default is 1e15.
+        :param xinit: None, or list of ndarrays (of same length as bs) containing initial guess
+        for x[i].
 
      OUTPUTS:
         x       n-vector, estimated solution
@@ -226,17 +226,29 @@ def minres(compute_Av,
     flag = theano.shared(numpy.float32(0.))
     beta1 = norm(bs)
 
+
     #------------------------------------------------------------------
     # Set up p and v for the first Lanczos vector v1.
     # p  =  beta1 P' v1,  where  P = C**(-1).
     # v is really P' v1.
     #------------------------------------------------------------------
-    r3s = [b for b in bs]
-    r2s = [b for b in bs]
-    r1s = [b for b in bs]
-    if Ms is not None:
-        r3s = [b/m for b,m in zip(bs,Ms)]
-        beta1 = norm(r3s, bs)
+    if xinit is None:
+        xinit = [TT.zeros_like(b) for b in bs]
+        r3s = [b for b in bs]
+        r2s = [b for b in bs]
+        r1s = [b for b in bs]
+        if Ms is not None:
+            r3s = [b/m for b,m in zip(bs,Ms)]
+            beta1 = norm(r3s, bs)
+    else:
+        if Ms is not None:
+            raise NotImplementedError('Not sure if xinit!=None and Ms!=None is done properly')
+        init_Ax = compute_Av(*xinit)
+        res = [bs[i] - init_Ax[i] for i in xrange(len(bs))]
+        r3s = copy.copy(res)
+        r2s = copy.copy(res)
+        r1s = copy.copy(res)
+        
     #------------------------------------------------------------------
     ## Initialize other quantities.
     # Note that Anorm has been initialized by IsOpSym6.
@@ -488,9 +500,10 @@ def minres(compute_Av,
     states.append(TT.constant(numpy.float32([0])))
     # 21 flag
     states.append(TT.constant(numpy.float32([0])))
-    xs = [TT.unbroadcast(TT.shape_padleft(TT.zeros_like(b)),0) for b in bs]
-    ds = [TT.unbroadcast(TT.shape_padleft(TT.zeros_like(b)),0) for b in bs]
-    dls = [TT.unbroadcast(TT.shape_padleft(TT.zeros_like(b)),0) for b in bs]
+
+    xs  = [TT.unbroadcast(TT.shape_padleft(xi),0) for xi in xinit]
+    ds  = [TT.unbroadcast(TT.shape_padleft(xi),0) for xi in xinit]
+    dls = [TT.unbroadcast(TT.shape_padleft(xi),0) for xi in xinit]
     r1s = [TT.unbroadcast(TT.shape_padleft(r1),0) for r1 in r1s]
     r2s = [TT.unbroadcast(TT.shape_padleft(r2),0) for r2 in r2s]
     r3s = [TT.unbroadcast(TT.shape_padleft(r3),0) for r3 in r3s]

@@ -226,7 +226,8 @@ def compute_test_set_likelihood(model, energy_fn, inference_fn, log_z, test_x):
         x = numpy.array(test_x[i:i + model.batch_size, :], dtype=floatX)
 
         # perform inference
-        psamples = inference_fn(x)
+        model.setup_pos_func(x)
+        psamples = inference_fn()
 
         # entropy of h(q) adds contribution to variational lower-bound
         hq = 0
@@ -276,13 +277,14 @@ def main(model, data):
     energy_fn = theano.function([beta], E)
 
     # Build inference function.
-    new_psamples = model.e_step(model.psamples, n_steps=model.pos_mf_steps)
-    inference_fn = theano.function([model.input], new_psamples)
+    new_psamples = model.e_step(n_steps=model.pos_mf_steps)
+    inference_fn = theano.function([], new_psamples)
 
     # Configure baserate bias for h1.
     temp = numpy.asarray(data.X, dtype=floatX)
     mean_data = numpy.mean(temp, axis=0)
-    psamples = inference_fn(mean_data[None,:])
+    model.setup_pos_func(numpy.tile(mean_data[None,:], (model.batch_size,1)))
+    psamples = inference_fn()
     mean_pos_h1 = numpy.minimum(psamples[1], 1-1e-5)
     mean_pos_h1 = numpy.maximum(mean_pos_h1, 1e-5)
     h1bias_a = -numpy.log(1./mean_pos_h1[0] - 1.)
@@ -333,6 +335,18 @@ def main(model, data):
 
     return (nll, log_z)
 
+def uncenter(model):
+    model.flags['enable_centering'] = False
+    # assume centering for now
+    bias = [bias.get_value() for bias in model.bias]
+    offset = [offset.get_value() for offset in model.offset]
+    W = [None] + [W.get_value() for W in model.W[1:]]
+    bias[0] -= numpy.dot(offset[1], W[1].T)
+    bias[1] -= numpy.dot(offset[0], W[1]) + numpy.dot(offset[2], W[2].T) 
+    bias[2] -= numpy.dot(offset[1], W[2])
+    for i in xrange(model.depth):
+        model.bias[i].set_value(bias[i])
+    return model
 
 if __name__ == '__main__':
 
@@ -343,6 +357,8 @@ if __name__ == '__main__':
 
     # Load model and retrieve parameters.
     model = serial.load(opts.path)
+    model = uncenter(model)
+    model.do_theano()
     # Load dataset.
     assert opts.dataset in ['train','test']
     dataset = mnist.MNIST(opts.dataset)

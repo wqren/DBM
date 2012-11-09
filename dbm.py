@@ -72,6 +72,9 @@ class DBM(Model, Block):
         """
         Model.__init__(self)
         Block.__init__(self)
+        flags.setdefault('enable_centering', False)
+        flags.setdefault('enable_natural', False)
+        flags.setdefault('mlbiases', False)
 
         self.depth = len(n_u)
 
@@ -96,6 +99,7 @@ class DBM(Model, Block):
         # allocate bilinear-weight matrices
         self.W = []
         self.bias = []
+        self.offset = []
         self.psamples = []
         self.nsamples = []
         self.input = T.matrix()
@@ -107,11 +111,10 @@ class DBM(Model, Block):
         self.output_space = VectorSpace(n_u[-1])
 
         for i, nui in enumerate(n_u):
-
-            self.bias += [sharedX(iscales['bias%i' %i] * numpy.ones(nui), name='bias%i'%i)]
             self.psamples += [sharedX(self.rng.rand(batch_size, nui), name='psamples%i'%i)]
             self.nsamples += [sharedX(self.rng.rand(batch_size, nui), name='nsamples%i'%i)]
-
+            self.bias += [sharedX(iscales['bias%i' %i] * numpy.ones(nui), name='bias%i'%i)]
+            self.offset += [sharedX(numpy.zeros(nui), name='offset%i'%i)]
             if i > 0: 
                 # declarate weight matrix and storage for positive phase statistics
                 # weight matrix for each layer
@@ -151,6 +154,12 @@ class DBM(Model, Block):
 
         if compile: self.do_theano()
 
+    def setup_pos(self):
+        updates = {self.psamples[0]: self.input}
+        for i in xrange(1, self.depth):
+            layer_init = T.ones((self.input.shape[0], self.n_u[i])) * self.offset[i]
+            updates[self.psamples[i]] = layer_init
+        return theano.function([self.input], [], updates=updates)
 
     def do_theano(self):
         """ Compiles all theano functions needed to use the model"""
@@ -158,18 +167,21 @@ class DBM(Model, Block):
         init_names = dir(self)
 
         ###### All fields you don't want to get pickled (e.g., theano functions) should be created below this line
-
+        ###
+        # FUNCTION WHICH PREPS POS PHASE
+        ###
+        self.setup_pos_func = self.setup_pos()
+ 
         ###
         # POSITIVE PHASE ESTEP
         ###
         if self.pos_mf_steps:
             assert self.pos_sample_steps == 0
-            new_psamples = self.e_step(self.input, n_steps=self.pos_mf_steps)
+            new_psamples = self.e_step(n_steps=self.pos_mf_steps)
         else:
-            new_psamples = self.pos_sampling(self.input, n_steps=self.pos_sample_steps)
+            new_psamples = self.pos_sampling(n_steps=self.pos_sample_steps)
         pos_updates = self.e_step_updates(new_psamples)
-        self.pos_func = function([self.input], [], updates=pos_updates,
-                                 name='pos_func', profile=0)
+        self.pos_func = function([], [], updates=pos_updates, name='pos_func', profile=0)
 
         ###
         # SAMPLING: NEGATIVE PHASE
@@ -191,8 +203,8 @@ class DBM(Model, Block):
         #sp_cost = self.get_sparsity_cost()
         minres_output = []
         natgrad_updates = {}
-        if self.flags.get('enable_natural', False):
-            minres_output, natgrad_updates = self.get_natural_direction(ml_cost, self.nsamples)
+        if self.flags['enable_natural']:
+            minres_output, natgrad_updates = self.get_natural_direction(ml_cost, self.psamples, self.nsamples)
         learning_grads = utils_cost.compute_gradients(ml_cost, reg_cost)
 
         ##
@@ -246,13 +258,16 @@ class DBM(Model, Block):
         :param batch_size: int. Batch size to use.
                HACK: this has to match self.batch_size.
         """
-
         # First-layer biases of RBM-type models should always be initialized to the log-odds
         # ratio. This ensures that the weights don't attempt to learn the mean.
-        if self.flags.get('mlbiases', False) and self.batches_seen == 0:
+        if self.flags['mlbiases'] and self.batches_seen == 0:
+            # set layer 0 biases
             mean_x = numpy.mean(dataset.X, axis=0)
             clip_x = numpy.clip(mean_x, 1e-5, 1-1e-5)
             self.bias[0].set_value(numpy.log(clip_x / (1. - clip_x)))
+            for i in xrange(self.depth):
+                offset_i = 1./(1 + numpy.exp(-self.bias[i].get_value()))
+                self.offset[i].set_value(offset_i)
 
         x = dataset.get_batch_design(batch_size, include_labels=False)
         self.learn_mini_batch(x)
@@ -297,20 +312,21 @@ class DBM(Model, Block):
         self.lr_shrd.set_value(self.lr / (1. + self.lr_anneal_coeff * self.batches_seen))
 
         # perform variational/sampling positive phase
-        self.pos_func(x)
+        self.setup_pos_func(x)
+        self.pos_func()
         for i in xrange(self.neg_sample_steps):
             self.sample_neg_func()
         rval = self.batch_train_func()
 
         ### LOGGING & DEBUGGING ###
-        if self.flags.get('enable_natural', False) and self.batches_seen%100 == 0:
+        if self.flags['enable_natural'] and self.batches_seen%100 == 0:
             if self.batches_seen == 0:
                 fp = open('minres.log', 'w')
             else:
                 fp = open('minres.log', 'a')
             fp.write('===================\n')
             fp.write('Batches seen: %i\n' % self.batches_seen)
-            fp.write('flag: %i\n' % rval[0])
+            fp.write('flag: %s\n' % minres.msgs[rval[0]])
             fp.write('niters: %i\n' % rval[1])
             fp.write('rel_residual: %s\n' % str(rval[2]))
             fp.write('rel_Aresidual: %s\n' % str(rval[3]))
@@ -321,16 +337,23 @@ class DBM(Model, Block):
             fp.write('\n\n')
             fp.close()
 
+    def center_samples(self, samples):
+        if self.flags['enable_centering']:
+            return [samples[i] - self.offset[i] for i in xrange(len(samples))]
+        else:
+            return samples
+
     def energy(self, samples, beta=1.0):
         """
         Computes energy for a given configuration of visible and hidden units.
         :param samples: list of T.matrix of shape (batch_size, n_u[i])
         samples[0] represents visible samples.
         """
-        energy = - T.dot(samples[0], self.bias[0]) * beta
+        csamples = self.center_samples(samples)
+        energy = - T.dot(csamples[0], self.bias[0]) * beta
         for i in xrange(1, self.depth):
-            energy -= T.sum(T.dot(samples[i-1], self.W[i] * beta) * samples[i], axis=1)
-            energy -= T.dot(samples[i], self.bias[i] * beta)
+            energy -= T.sum(T.dot(csamples[i-1], self.W[i] * beta) * csamples[i], axis=1)
+            energy -= T.dot(csamples[i], self.bias[i] * beta)
 
         return energy
 
@@ -350,17 +373,18 @@ class DBM(Model, Block):
         :param apply_sigmoid: when False, hi_given will not apply the sigmoid. Useful for AIS
         estimate.
         """
-        hi_mean = 0.
+        csamples = self.center_samples(samples)
 
+        hi_mean = 0.
         if i < self.depth-1:
             # top-down input
             wip1 = self.W[i+1]
-            hi_mean += T.dot(samples[i+1], wip1.T) * beta
+            hi_mean += T.dot(csamples[i+1], wip1.T) * beta
 
         if i > 0:
             # bottom-up input
             wi = self.W[i]
-            hi_mean += T.dot(samples[i-1], wi) * beta
+            hi_mean += T.dot(csamples[i-1], wi) * beta
 
         hi_mean += self.bias[i] * beta
 
@@ -374,7 +398,6 @@ class DBM(Model, Block):
         Given current state of our DBM (`samples`), sample the values taken by the i-th layer.
         See self.hi_given for detailed description of parameters.
         """
-
         hi_mean = self.hi_given(samples, i, beta)
 
         hi_sample = self.theano_rng.binomial(
@@ -389,17 +412,14 @@ class DBM(Model, Block):
     # SAMPLING STUFF #
     ##################
 
-    def pos_sampling(self, v, n_steps=50):
+    def pos_sampling(self, n_steps=50):
         """
         Performs `n_steps` of mean-field inference (used to compute positive phase statistics).
         :param psamples: list of tensor-like objects, representing the state of each layer of
         the DBM (during the inference process). psamples[0] points to self.input.
         :param n_steps: number of iterations of mean-field to perform.
         """
-        new_psamples = []
-        for i in xrange(0,self.depth):
-            layer = T.fill(self.psamples[i], 1.) if i > 0 else v
-            new_psamples += [T.unbroadcast(T.shape_padleft(layer))]
+        new_psamples = [T.unbroadcast(T.shape_padleft(psample)) for psample in self.psamples]
 
         # now alternate mean-field inference for even/odd layers
         def sample_iteration(*psamples):
@@ -417,17 +437,14 @@ class DBM(Model, Block):
 
         return [x[0] for x in new_psamples]
 
-    def e_step(self, v, n_steps=100, eps=1e-5):
+    def e_step(self, n_steps=100, eps=1e-5):
         """
         Performs `n_steps` of mean-field inference (used to compute positive phase statistics).
         :param psamples: list of tensor-like objects, representing the state of each layer of
         the DBM (during the inference process). psamples[0] points to self.input.
         :param n_steps: number of iterations of mean-field to perform.
         """
-        new_psamples = []
-        for i in xrange(0,self.depth):
-            layer = T.fill(self.psamples[i], 1.) if i > 0 else v
-            new_psamples += [T.unbroadcast(T.shape_padleft(layer))]
+        new_psamples = [T.unbroadcast(T.shape_padleft(psample)) for psample in self.psamples]
 
         # now alternate mean-field inference for even/odd layers
         def mf_iteration(*psamples):
@@ -497,9 +514,15 @@ class DBM(Model, Block):
     def get_monitoring_channels(self, x, y=None):
         chans = {}
 
+        cpsamples = self.center_samples(self.psamples)
+        cnsamples = self.center_samples(self.nsamples)
+
         for i in xrange(self.depth):
             chans.update(self.monitor_stats(self.bias[i], axis=(0,)))
+            chans.update(self.monitor_stats(self.psamples[i]))
             chans.update(self.monitor_stats(self.nsamples[i]))
+            chans.update(self.monitor_stats(cpsamples[i], name='cpsamples%i'%i))
+            chans.update(self.monitor_stats(cnsamples[i], name='cnsamples%i'%i))
 
         for i in xrange(1, self.depth):
             chans.update(self.monitor_stats(self.W[i]))
@@ -509,12 +532,13 @@ class DBM(Model, Block):
         def normalize(x):
             return x / T.sqrt(T.sum(x**2))
 
-        w1_cos = T.dot(normalize(self.log['grad_w1'].flatten()),
-                       normalize(self.log['natgrad_w1'].flatten()))
-        w2_cos = T.dot(normalize(self.log['grad_w2'].flatten()),
-                       normalize(self.log['natgrad_w2'].flatten()))
-        chans['w1_cos_err'] = w1_cos
-        chans['w2_cos_err'] = w2_cos
+        if self.flags.get('enable_natural', False):
+            w1_cos = T.dot(normalize(self.log['grad_w1'].flatten()),
+                           normalize(self.log['natgrad_w1'].flatten()))
+            w2_cos = T.dot(normalize(self.log['grad_w2'].flatten()),
+                           normalize(self.log['natgrad_w2'].flatten()))
+            chans['w1_cos_err'] = w1_cos
+            chans['w2_cos_err'] = w2_cos
  
         return chans
 
@@ -571,7 +595,7 @@ class DBM(Model, Block):
 
         return utils_cost.Cost(cost, params)
 
-    def get_natural_direction(self, ml_cost, nsamples):
+    def get_natural_direction(self, ml_cost, psamples, nsamples):
         """
         Returns: list
             See minres documentation for the meaning of each return value.
@@ -584,6 +608,11 @@ class DBM(Model, Block):
             rvals[7]: xnorm
             rvals[8]: Axnorm
         """
+        cpsamples = self.center_samples(psamples)
+        cnsamples = self.center_samples(nsamples)
+
+        # shared variables to remember the previous search direction
+
 
         assert self.depth == 3
         inputs = [ml_cost.grads[self.W[1]],
@@ -594,19 +623,21 @@ class DBM(Model, Block):
 
         if self.computational_bs > 0:
             def Lx_func(xw1, xw2, xbias0, xbias1, xbias2):
-                return natural.compute_Lx_batches(
-                        self.nsamples[0],
-                        self.nsamples[1],
-                        self.nsamples[2],
+                Lneg_x = natural.compute_Lx_batches(
+                        cnsamples[0],
+                        cnsamples[1],
+                        cnsamples[2],
                         xw1, xw2, xbias0, xbias1, xbias2,
                         self.force_batch_size, self.computational_bs)
+                return Lneg_x
         else:
             def Lx_func(xw1, xw2, xbias0, xbias1, xbias2):
-                return natural.compute_Lx(
-                        self.nsamples[0],
-                        self.nsamples[1],
-                        self.nsamples[2],
+                Lneg_x = natural.compute_Lx(
+                        cnsamples[0],
+                        cnsamples[1],
+                        cnsamples[2],
                         xw1, xw2, xbias0, xbias1, xbias2)
+                return Lneg_x
 
         rvals = minres.minres(
                 Lx_func,

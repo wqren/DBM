@@ -13,7 +13,7 @@ from pylearn2.gui.patch_viewer import PatchViewer
 from pylearn2.datasets.dense_design_matrix import DefaultViewConverter
 from pylearn2.datasets.dense_design_matrix import DenseDesignMatrix
 from pylearn2.utils import serial
-from ..utils import floatX
+floatX = theano.config.floatX
 
 def estimate_from_weights(log_ais_w):
 
