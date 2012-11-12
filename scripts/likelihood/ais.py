@@ -277,7 +277,9 @@ def main(model, data):
     energy_fn = theano.function([beta], E)
 
     # Build inference function.
-    new_psamples = model.e_step(n_steps=model.pos_mf_steps)
+    assert (model.pos_mf_steps or model.pos_sample_steps)
+    pos_steps = model.pos_mf_steps if model.pos_mf_steps else model.pos_sample_steps
+    new_psamples = model.e_step(n_steps=pos_steps)
     inference_fn = theano.function([], new_psamples)
 
     # Configure baserate bias for h1.
@@ -317,7 +319,7 @@ def main(model, data):
 
     # default configuration for interpolating distributions
     betas = numpy.cast[floatX](
-        numpy.hstack((numpy.linspace(0, 0.5, 1e3),
+        numpy.hstack((numpy.linspace(0, 0.5, 1e4),
                      numpy.linspace(0.5, 0.9, 1e4),
                      numpy.linspace(0.9, 1.0, 1e4))))
 
@@ -361,6 +363,6 @@ if __name__ == '__main__':
     model.do_theano()
     # Load dataset.
     assert opts.dataset in ['train','test']
-    dataset = mnist.MNIST(opts.dataset)
+    dataset = mnist.MNIST(opts.dataset, binarize=True)
 
     main(model, dataset)
