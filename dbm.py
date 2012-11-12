@@ -72,62 +72,37 @@ class DBM(Model, Block):
         """
         Model.__init__(self)
         Block.__init__(self)
-        flags.setdefault('enable_centering', False)
-        flags.setdefault('enable_natural', False)
-        flags.setdefault('mlbiases', False)
-
-        self.depth = len(n_u)
-
+        ### VALIDATE PARAMETERS AND SET DEFAULT VALUES ###
         for (k,v) in clip_min.iteritems(): clip_min[k] = npy_floatX(v)
         for (k,v) in clip_max.iteritems(): clip_max[k] = npy_floatX(v)
-        for i in xrange(self.depth):
-            iscales.setdefault('bias%i'%i, 0.)
-            iscales.setdefault('W%i'%i, 0.1)
-        assert len(n_u) > 1
-
-        # dump initialization parameters to object
+        [iscales.setdefault('bias%i' % i, 0.) for i in xrange(len(n_u))]
+        [iscales.setdefault('W%i' % i, 0.1) for i in xrange(len(n_u))]
+        flags.setdefault('enable_centering', False)
+        flags.setdefault('enable_natural', False)
+        flags.setdefault('enable_warm_start', False)
+        flags.setdefault('mlbiases', False)
+        ### DUMP INITIALIZATION PARAMETERS TO OBJECT ###
         for (k,v) in locals().iteritems():
             if k!='self': setattr(self,k,v)
+
+        assert len(n_u) > 1
+        self.n_v = n_u[0]
+        self.depth = len(n_u)
 
         # allocate random number generators
         self.rng = numpy.random.RandomState(seed)
         self.theano_rng = RandomStreams(self.rng.randint(2**30))
 
-        ############### ALLOCATE PARAMETERS #################
-        self.n_v = n_u[0]
-
         # allocate bilinear-weight matrices
-        self.W = []
-        self.bias = []
-        self.offset = []
-        self.psamples = []
-        self.nsamples = []
         self.input = T.matrix()
-        self.neg_ev = sharedX(self.rng.rand(batch_size, n_u[0]), name='neg_ev')
-        self.computational_bs = computational_bs
+        self.init_parameters()
+        self.init_dparameters()
+        self.init_centering()
+        self.init_samples()
 
         # configure input-space (?new pylearn2 feature?)
         self.input_space = VectorSpace(n_u[0])
         self.output_space = VectorSpace(n_u[-1])
-
-        for i, nui in enumerate(n_u):
-            self.psamples += [sharedX(self.rng.rand(batch_size, nui), name='psamples%i'%i)]
-            self.nsamples += [sharedX(self.rng.rand(batch_size, nui), name='nsamples%i'%i)]
-            self.bias += [sharedX(iscales['bias%i' %i] * numpy.ones(nui), name='bias%i'%i)]
-            self.offset += [sharedX(numpy.zeros(nui), name='offset%i'%i)]
-            if i > 0: 
-                # declarate weight matrix and storage for positive phase statistics
-                # weight matrix for each layer
-                wv_val  = self.rng.randn(n_u[i-1], n_u[i]) * iscales.get('W%i'%i,1.0)
-                self.W += [sharedX(wv_val, name='W%i' % i)]
-            else:
-                self.W += [None]
-
-        # debugging
-        self.log = {'grad_w1': sharedX(self.W[1].get_value(), name=''),
-                    'grad_w2': sharedX(self.W[2].get_value(), name=''),
-                    'natgrad_w1': sharedX(self.W[1].get_value(), name=''),
-                    'natgrad_w2': sharedX(self.W[2].get_value(), name='')}
 
         # learning rate - implemented as shared parameter for GPU
         self.lr_shrd = sharedX(lr, name='lr_shrd')
@@ -143,16 +118,46 @@ class DBM(Model, Block):
         self.examples_seen = 0                   # incremented on every training example
         self.force_batch_size = batch_size       # force minibatch size
 
-        self.error_record = []
-
-        ## ESTABLISH LIST OF LEARNT MODEL PARAMETERS ##
-        self.params = []
-        for i in xrange(self.depth):   
-            self.params += [self.bias[i]]
-            if i > 0: 
-                self.params += [self.W[i]]
-
         if compile: self.do_theano()
+
+    def init_parameters(self):
+        # Create shared variables for model parameters.
+        self.W = []
+        self.bias = []
+        for i, nui in enumerate(self.n_u):
+            self.bias += [sharedX(self.iscales['bias%i' %i] * numpy.ones(nui), name='bias%i'%i)]
+            self.W += [None]
+            if i > 0: 
+                wv_val = self.rng.randn(self.n_u[i-1], nui) * self.iscales.get('W%i'%i,1.0)
+                self.W[i] = sharedX(wv_val, name='W%i' % i)
+        # Establish list of learnt model parameters.
+        self.params  = [Wi for Wi in self.W[1:]]
+        self.params += [bi for bi in self.bias]
+
+    def init_dparameters(self):
+        # Create shared variables for model parameters.
+        self.dW = []
+        self.dbias = []
+        for i, nui in enumerate(self.n_u):
+            self.dbias += [sharedX(numpy.zeros(nui), name='dbias%i'%i)]
+            self.dW += [None]
+            if i > 0: 
+                wv_val = numpy.zeros((self.n_u[i-1], nui))
+                self.dW[i] = sharedX(wv_val, name='dW%i' % i)
+        self.dparams  = [dWi for dWi in self.dW[1:]]
+        self.dparams += [dbi for dbi in self.dbias]
+ 
+    def init_centering(self):
+        self.offset = []
+        for i, nui in enumerate(self.n_u):
+            self.offset += [sharedX(numpy.zeros(nui), name='offset%i'%i)]
+
+    def init_samples(self):
+        self.psamples = []
+        self.nsamples = []
+        for i, nui in enumerate(self.n_u):
+            self.psamples += [sharedX(self.rng.rand(self.batch_size, nui), name='psamples%i'%i)]
+            self.nsamples += [sharedX(self.rng.rand(self.batch_size, nui), name='nsamples%i'%i)]
 
     def setup_pos(self):
         updates = {self.psamples[0]: self.input}
@@ -163,6 +168,7 @@ class DBM(Model, Block):
 
     def do_theano(self):
         """ Compiles all theano functions needed to use the model"""
+        self.flags.setdefault('enable_warm_start', False)
 
         init_names = dir(self)
 
@@ -188,7 +194,7 @@ class DBM(Model, Block):
         ###
         new_nsamples = self.neg_sampling(self.nsamples)
         new_ev = self.hi_given(new_nsamples, 0)
-        neg_updates = {self.neg_ev: new_ev}
+        neg_updates = {}
         for (nsample, new_nsample) in zip(self.nsamples, new_nsamples):
             neg_updates[nsample] = new_nsample
         self.sample_neg_func = function([], [], updates=neg_updates,
@@ -204,7 +210,9 @@ class DBM(Model, Block):
         minres_output = []
         natgrad_updates = {}
         if self.flags['enable_natural']:
-            minres_output, natgrad_updates = self.get_natural_direction(ml_cost, self.psamples, self.nsamples)
+            xinit = self.dparams if self.flags['enable_warm_start'] else None
+            minres_output, natgrad_updates = self.get_natural_direction(
+                    ml_cost, self.nsamples, xinit = xinit)
         learning_grads = utils_cost.compute_gradients(ml_cost, reg_cost)
 
         ##
@@ -532,14 +540,6 @@ class DBM(Model, Block):
         def normalize(x):
             return x / T.sqrt(T.sum(x**2))
 
-        if self.flags.get('enable_natural', False):
-            w1_cos = T.dot(normalize(self.log['grad_w1'].flatten()),
-                           normalize(self.log['natgrad_w1'].flatten()))
-            w2_cos = T.dot(normalize(self.log['grad_w2'].flatten()),
-                           normalize(self.log['natgrad_w2'].flatten()))
-            chans['w1_cos_err'] = w1_cos
-            chans['w2_cos_err'] = w2_cos
- 
         return chans
 
     ##############################
@@ -595,7 +595,17 @@ class DBM(Model, Block):
 
         return utils_cost.Cost(cost, params)
 
-    def get_natural_direction(self, ml_cost, psamples, nsamples):
+    def get_dparam_updates(self, *deltas):
+        updates = {}
+        if self.flags['enable_warm_start']:
+            updates[self.dW[1]] = deltas[0]
+            updates[self.dW[2]] = deltas[1]
+            updates[self.dbias[0]] = deltas[2]
+            updates[self.dbias[1]] = deltas[3]
+            updates[self.dbias[2]] = deltas[4]
+        return updates
+
+    def get_natural_direction(self, ml_cost, nsamples, xinit=None):
         """
         Returns: list
             See minres documentation for the meaning of each return value.
@@ -608,11 +618,7 @@ class DBM(Model, Block):
             rvals[7]: xnorm
             rvals[8]: Axnorm
         """
-        cpsamples = self.center_samples(psamples)
         cnsamples = self.center_samples(nsamples)
-
-        # shared variables to remember the previous search direction
-
 
         assert self.depth == 3
         inputs = [ml_cost.grads[self.W[1]],
@@ -645,14 +651,10 @@ class DBM(Model, Block):
                 rtol = self.minres_params['rtol'],
                 damp = self.minres_params['damp'],
                 maxit = self.minres_params['maxit'],
+                xinit = xinit,
                 profile=0)
 
         newgrads = rvals[0]
-
-        # Store for debugging.
-        updates = {}
-        updates[self.log['grad_w1']] = ml_cost.grads[self.W[1]]
-        updates[self.log['grad_w2']] = ml_cost.grads[self.W[2]]
 
         # Now replace grad with natural gradient.
         ml_cost.grads[self.W[1]] = newgrads[0]
@@ -661,7 +663,4 @@ class DBM(Model, Block):
         ml_cost.grads[self.bias[1]] = newgrads[3]
         ml_cost.grads[self.bias[2]] = newgrads[4]
         
-        updates[self.log['natgrad_w1']] = newgrads[0]
-        updates[self.log['natgrad_w2']] = newgrads[1]
-
-        return rvals[1:], updates
+        return rvals[1:], self.get_dparam_updates(*newgrads)
