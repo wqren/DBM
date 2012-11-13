@@ -155,6 +155,22 @@ def compute_L_diag(v, g, h):
 
     return [Lww.reshape((N0,N1)), Lvv.reshape((N1,N2)), Laa, Lbb, Lcc]
 
+def generic_compute_L_diag(samples):
+    M = samples[0].shape[0]
+    Minv = T.cast(1./M, floatX)
+    N = [samples_i.shape[1] for samples_i in samples]
+
+    rval = []
+    for (nim1, ni, sim1, si) in zip(N[:-1], N[1:], samples[:-1], samples[1:]):
+        dE_dWi = T.dot(sim1.T, si).flatten() * Minv
+        L_wi_wi = T.mean(star_prod(sim1,si)**2, axis=0) - dE_dWi**2
+        rval += [L_wi_wi.reshape((nim1,ni))]
+    for (ni, si) in zip(N, samples):
+        Lbias_i = T.mean(si**2, axis=0) - T.mean(si, axis=0)**2
+        rval += [Lbias_i]
+
+    return rval
+
 def generic_compute_Lx(samples, weights, biases):
      terms1 = generic_compute_Lx_term1(samples, weights, biases)
      terms2 = generic_compute_Lx_term2(samples, weights, biases)

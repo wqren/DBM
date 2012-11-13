@@ -206,3 +206,34 @@ def test_generic_compute_Lx():
     numpy.testing.assert_almost_equal(Lx_b, rvals[4], decimal=3)
     numpy.testing.assert_almost_equal(Lx_c, rvals[5], decimal=3)
     numpy.testing.assert_almost_equal(Lx_d, rvals[6], decimal=3)
+
+
+def test_generic_compute_Ldiag():
+
+    ## now compare against theano version
+    vv = T.matrix()
+    gg = T.matrix()
+    hh = T.matrix()
+    qq = T.matrix()
+    # test compute_Lx
+    LL = natural.generic_compute_L_diag([vv, gg, hh, qq])
+    f = theano.function([vv, gg, hh, qq], LL)
+    rvals = f(v, g, h, q)
+    # compare against baseline
+    Ldiag = numpy.diag(L)
+    Ldiag_w = Ldiag[:N0*N1].reshape(N0,N1)
+    Ldiag_v = Ldiag[N0*N1 : N0*N1 + N1*N2].reshape(N1,N2)
+    Ldiag_z = Ldiag[N0*N1 + N1*N2 : N0*N1 + N1*N2 + N2*N3].reshape(N2,N3)
+    Ldiag_a = Ldiag[-N3-N2-N1-N0:-N3-N2-N1]
+    Ldiag_b = Ldiag[-N3-N2-N1:-N3-N2]
+    Ldiag_c = Ldiag[-N3-N2:-N3]
+    Ldiag_d = Ldiag[-N3:]
+    numpy.testing.assert_almost_equal(Ldiag_w, rvals[0], decimal=3)
+    numpy.testing.assert_almost_equal(Ldiag_v, rvals[1], decimal=3)
+    numpy.testing.assert_almost_equal(Ldiag_z, rvals[2], decimal=3)
+    numpy.testing.assert_almost_equal(Ldiag_a, rvals[3], decimal=3)
+    numpy.testing.assert_almost_equal(Ldiag_b, rvals[4], decimal=3)
+    numpy.testing.assert_almost_equal(Ldiag_c, rvals[5], decimal=3)
+
+
+
