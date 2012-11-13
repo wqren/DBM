@@ -241,14 +241,15 @@ def minres(compute_Av,
             r3s = [b/m for b,m in zip(bs,Ms)]
             beta1 = norm(r3s, bs)
     else:
-        if Ms is not None:
-            raise NotImplementedError('Not sure if xinit!=None and Ms!=None is done properly')
         init_Ax = compute_Av(*xinit)
         res = [bs[i] - init_Ax[i] for i in xrange(len(bs))]
         r3s = copy.copy(res)
         r2s = copy.copy(res)
         r1s = copy.copy(res)
-        
+        if Ms is not None:
+            r3s = [r/m for r,m in zip(r3s, Ms)]
+            beta1 = norm(r3s, res)
+
     #------------------------------------------------------------------
     ## Initialize other quantities.
     # Note that Anorm has been initialized by IsOpSym6.
@@ -528,7 +529,7 @@ def minres(compute_Av,
 
 
 def test_1():
-    n = 100
+    n = 10
     on = numpy.ones((n,1), dtype='float32')
     A = numpy.zeros((n,n), dtype='float32')
     for k in xrange(n):
@@ -537,15 +538,18 @@ def test_1():
             A[k-1,k] = -2.
             A[k,k-1] = -2.
     b = A.sum(axis=1)
+    x0 = numpy.random.uniform(size=(n,))*.1 + .5
     rtol=numpy.float32(1e-10)
     maxit = 50
     M = numpy.ones((n,), dtype='float32')*4.
     tA = theano.shared(A.astype('float32'))
+    tx0 = theano.shared(x0.astype('float32'))
     tb = theano.shared(b.astype('float32'))
     tM = theano.shared(M.astype('float32'))
     compute_Av = lambda x : [TT.dot(tA,x)]
     xs, flag, iters, relres, relAres, Anorm, Acond, xnorm, Axnorm = \
             minres(compute_Av, [tb], rtol = rtol, maxit = maxit,
+                   xinit = [tx0],
                    Ms = [tM], profile=0)
 
     func = theano.function([],
@@ -566,6 +570,7 @@ def test_1():
     print 'Axnorm', rvals[8]
     print 'error', numpy.sqrt(numpy.sum((numpy.dot(rvals[0], A) - b)**2))
     print
+    print rvals[0]
 
 
 def test_2():
