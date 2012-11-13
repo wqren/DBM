@@ -1,38 +1,56 @@
 !obj:pylearn2.scripts.train.Train {
     # dataset below is now (temporarily) obsolete
+    "max_epochs": 200,
+    "save_freq": 1,
+    "save_path": "dbm",
     "dataset": &data !obj:pylearn2.datasets.mnist.MNIST {
         "which_set": 'train',
+        "shuffle": True,
         "one_hot": True,
+        "binarize": True,
     },
-    "model": !obj:DBM.dbm.DBM {
+    "model": &model !obj:DBM.dbm.DBM {
         "seed" : 123141,
-        "n_u": [784,500,500],
+        "n_u": [784,400,100],
         "lr": 0.001,
         "flags": {
-            'enable_natural': True,
+            'enable_natural': False,
+            'enable_natural_diag': True,
+            'enable_centering': True,
+            'precondition': None,
             'mlbiases': True
         },
         "lr_timestamp": [0.],
         "lr_mults": {},
-        "pos_mf_steps": 5,
-        "iscales": {'W1': 0.01, 'W2': 0.01},
+        "pos_mf_steps": 0,
+        "pos_sample_steps": 5,
+        "neg_sample_steps": 5,
+        "iscales": {'W1': 0., 'W2': 0.},
         "clip_min": {},
         "l1": {'W1': 0.0, 'W2': 0.0},
-        "batch_size": 2048,
-        "computational_bs":256,
-        "my_save_path": 'dbm',
+        "batch_size": 25,
+        "computational_bs": 0,
         "minres_params": {
             'rtol': 0.00001,
             'damp': 0.1,
             'maxit': 80,
-        }
-        "save_at": [100],
-        "save_every": 100,
+        },
+        "my_save_path": 'dbm',
+        "save_at": [1000,5000],
+        "save_every": 10000,
     },
     "algorithm": !obj:pylearn2.training_algorithms.default.DefaultTrainingAlgorithm {
-               "batch_size": 2048,
-               "batches_per_iter" : 10,
-               "monitoring_batches": 10,
-               "monitoring_dataset": *data,
+        "batch_size": 25,
+        "batches_per_iter" : 1000,
+        "monitoring_batches": 1,
+        "monitoring_dataset": *data,
     },
+    "callbacks": [
+        !obj:DBM.polyak.PolyakAveraging {
+            "model": *model,
+            "save_path": 'polyak_dbm.pkl',
+            "save_freq": 1,
+            "kc": 10,
+        },
+    ]
 }

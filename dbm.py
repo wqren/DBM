@@ -26,7 +26,6 @@ from DBM import sharedX, floatX, npy_floatX
 class DBM(Model, Block):
     """Bilinear Restricted Boltzmann Machine (RBM)  """
 
-
     def __init__(self, input = None, n_u=[100,100], enable={}, load_from=None,
             iscales=None, clip_min={}, clip_max={},
             pos_mf_steps=1, pos_sample_steps=0, neg_sample_steps=1, 
@@ -118,6 +117,7 @@ class DBM(Model, Block):
         # counters used by pylearn2 trainers
         self.batches_seen = 0                    # incremented on every batch
         self.examples_seen = 0                   # incremented on every training example
+        self.epoch = 0
         self.force_batch_size = batch_size       # force minibatch size
 
         if load_from:
@@ -139,6 +139,10 @@ class DBM(Model, Block):
         self.params  = [Wi for Wi in self.W[1:]]
         self.params += [bi for bi in self.bias]
 
+    # pylearn2 compatibility
+    def get_params(self):
+        return self.params
+
     def load_parameters(self, fname):
         # load model
         fp = open(fname)
@@ -153,6 +157,7 @@ class DBM(Model, Block):
             offi.set_value(m_offi.get_value())
         self.examples_seen = model.examples_seen
         self.batches_seen = model.batches_seen
+        self.epoch = model.epoch
         # load negative phase particles
         mi = 0
         for k in xrange(self.depth):
@@ -243,7 +248,7 @@ class DBM(Model, Block):
             minres_output, natgrad_updates = self.get_natural_direction(
                     ml_cost, self.nsamples,
                     xinit = xinit,
-                    precondition = self.flags['precondition'])
+                    precondition = self.flags.get('precondition',None))
         elif self.flags['enable_natural_diag']:
             self.get_natural_diag_direction(ml_cost, self.nsamples)
         learning_grads = utils_cost.compute_gradients(ml_cost, reg_cost)
@@ -317,10 +322,6 @@ class DBM(Model, Block):
         x = dataset.get_batch_design(batch_size, include_labels=False)
         self.learn_mini_batch(x)
 
-        # accounting...
-        self.examples_seen += self.batch_size
-        self.batches_seen += 1
-
         # modify learning rate multipliers
         for (k, iter) in self.lr_mults_it.iteritems():
             if iter.next():
@@ -329,20 +330,6 @@ class DBM(Model, Block):
                 print 'lr_mults_shrd[%s] = %f' % (k,iter.value)
 
         self.enforce_constraints()
-
-        # save to different path each epoch
-        if self.my_save_path and \
-           (self.batches_seen in self.save_at or
-            self.batches_seen % self.save_every == 0):
-
-            fname = self.my_save_path + '_e%i.pkl' % (self.batches_seen)
-            print 'Saving to %s ...' %fname,
-            serial.save(fname, self)
-            print 'done'
-            # log GPU-memory usage
-            utils.print_mem()
-
-        return True
 
 
     def learn_mini_batch(self, x):
@@ -667,7 +654,7 @@ class DBM(Model, Block):
             rvals[7]: xnorm
             rvals[8]: Axnorm
         """
-        assert precondition in ['jacobi']
+        assert precondition in [None, 'jacobi']
         cnsamples = self.center_samples(nsamples)
 
         assert self.depth == 3
@@ -679,7 +666,7 @@ class DBM(Model, Block):
        
         if self.computational_bs > 0:
             def Lx_func(*args):
-                 Lneg_x = natural.generic_compute_Lx_batches(
+                Lneg_x = natural.generic_compute_Lx_batches(
                          cnsamples,
                          args[:len(self.W)-1],
                          args[len(self.W)-1:],
