@@ -673,21 +673,20 @@ class DBM(Model, Block):
                   ml_cost.grads[self.bias[2]]]
 
         if self.computational_bs > 0:
-            def Lx_func(xw1, xw2, xbias0, xbias1, xbias2):
-                Lneg_x = natural.compute_Lx_batches(
-                        cnsamples[0],
-                        cnsamples[1],
-                        cnsamples[2],
-                        xw1, xw2, xbias0, xbias1, xbias2,
-                        self.force_batch_size, self.computational_bs)
+            def Lx_func(*args):
+                 Lneg_x = natural.generic_compute_Lx_batches(
+                         cnsamples,
+                         args[:len(self.W)-1],
+                         args[len(self.W)-1:],
+                         self.force_batch_size,
+                         self.computational_bs)
                 return Lneg_x
         else:
-            def Lx_func(xw1, xw2, xbias0, xbias1, xbias2):
-                Lneg_x = natural.compute_Lx(
-                        cnsamples[0],
-                        cnsamples[1],
-                        cnsamples[2],
-                        xw1, xw2, xbias0, xbias1, xbias2)
+            def Lx_func(*args):
+                Lneg_x = natural.generic_compute_Lx(
+                        cnsamples,
+                        args[:len(self.W)-1],
+                        args[len(self.W)-1:])
                 return Lneg_x
 
         rvals = minres.minres(
