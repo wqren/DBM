@@ -150,6 +150,65 @@ def test_compute_Lx():
     numpy.testing.assert_almost_equal(Lx_b, rvals[3], decimal=3)
     numpy.testing.assert_almost_equal(Lx_c, rvals[4], decimal=3)
 
+def test_generic_compute_Lx_batches():
+
+    ## now compare against theano version
+    vv = T.matrix()
+    gg = T.matrix()
+    hh = T.matrix()
+    aa = T.vector()
+    bb = T.vector()
+    cc = T.vector()
+    xxw_mat = T.matrix()
+    xxv_mat = T.matrix()
+    xxw = T.vector()
+    xxv = T.vector()
+    xxa = T.vector()
+    xxb = T.vector()
+    xxc = T.vector()
+
+    # test compute_Lx
+    LLx = natural.generic_compute_Lx_batches([vv, gg, hh],
+                                             [xxw_mat, xxv_mat],
+                                             [xxa, xxb, xxc],
+                                             256, 64)
+    f = theano.function([vv, gg, hh, xxw_mat, xxv_mat, xxa, xxb, xxc], LLx)
+    rvals = f(v, g, h, xw_mat, xv_mat, xa, xb, xc)
+    numpy.testing.assert_almost_equal(Lx_w, rvals[0], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_v, rvals[1], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_a, rvals[2], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_b, rvals[3], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_c, rvals[4], decimal=3)
+
+def test_generic_compute_Lx():
+
+    ## now compare against theano version
+    vv = T.matrix()
+    gg = T.matrix()
+    hh = T.matrix()
+    aa = T.vector()
+    bb = T.vector()
+    cc = T.vector()
+    xxw_mat = T.matrix()
+    xxv_mat = T.matrix()
+    xxw = T.vector()
+    xxv = T.vector()
+    xxa = T.vector()
+    xxb = T.vector()
+    xxc = T.vector()
+
+    # test compute_Lx
+    LLx = natural.generic_compute_Lx([vv, gg, hh],
+                                     [xxw_mat, xxv_mat],
+                                     [xxa, xxb, xxc])
+    f = theano.function([vv, gg, hh, xxw_mat, xxv_mat, xxa, xxb, xxc], LLx)
+    rvals = f(v, g, h, xw_mat, xv_mat, xa, xb, xc)
+    numpy.testing.assert_almost_equal(Lx_w, rvals[0], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_v, rvals[1], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_a, rvals[2], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_b, rvals[3], decimal=3)
+    numpy.testing.assert_almost_equal(Lx_c, rvals[4], decimal=3)
+
 def test_math():
     """
     A hand-unrolled implementation of the math in 2012/dbm_natural/math.lyx.
