@@ -15,6 +15,8 @@ from pylearn2.datasets.dense_design_matrix import DenseDesignMatrix
 from pylearn2.utils import serial
 floatX = theano.config.floatX
 
+import ais
+
 def estimate_from_weights(log_ais_w):
 
     # estimate the log-mean of the AIS weights
@@ -38,7 +40,8 @@ parser.add_option('--large', action='store_true', dest='large')
 
 # load model and retrieve parameters
 model = serial.load(opts.path)
-
+model = ais.uncenter(model)
+model.do_theano()
 
 ##########################
 ## BUILD THEANO FUNCTIONS
@@ -50,12 +53,14 @@ E = model.energy(model.nsamples, beta)
 energy_fn = theano.function([beta], E)
 
 # build inference function
-new_psamples = model.e_step(model.psamples, n_steps=model.pos_mf_steps)
-inference_fn = function([model.input], new_psamples)
+assert (model.pos_mf_steps or model.pos_sample_steps)
+pos_steps = model.pos_mf_steps if model.pos_mf_steps else model.pos_sample_steps
+new_psamples = model.e_step(n_steps=pos_steps)
+inference_fn = function([], new_psamples)
 
 # build function to sample
 updates = {}
-new_nsamples = model.neg_sampling(model.nsamples, n_steps=model.neg_sample_steps, beta=beta)
+new_nsamples = model.neg_sampling(model.nsamples, beta=beta)
 for (nsample, new_nsample) in zip(model.nsamples, new_nsamples):
     updates[nsample] = new_nsample
 sample_fn = function([beta], [], updates=updates, name='sample_func')
@@ -111,8 +116,8 @@ print 'dlogz = ', dlogz
 print 'var_dlogz = ', var_dlogz
 
 # default log-partition
-log_za = numpy.sum(numpy.log(1 + numpy.exp(model.bias[0].get_value())))
-for n_ui in model.n_u[1:]:
+log_za = 0
+for n_ui in model.n_u:
     log_za += n_ui * numpy.log(2)
 log_z = log_za + dlogz
 
@@ -125,7 +130,7 @@ print 'var_dlogz = ',  var_dlogz
 ##############################
 from pylearn2.datasets import mnist
 assert opts.dataset in ['train','test']
-data = mnist.MNIST(opts.dataset)
+data = mnist.MNIST(opts.dataset, binarize=True)
 
 i = 0.
 nll = 0
@@ -136,12 +141,13 @@ for i in xrange(0, len(data.X), model.batch_size):
     x = numpy.array(data.X[i:i + model.batch_size, :], dtype=floatX)
 
     # perform inference
-    psamples = inference_fn(x)
+    model.setup_pos_func(x)
+    psamples = inference_fn()
 
     # entropy of h(q) adds contribution to variational lower-bound
     hq = 0
     for psample in psamples[1:]:
-        temp = - psample * numpy.log(1e-5 + psample) - (1.-psample) * numpy.log(1. - psample + 1e-5)
+        temp = -psample * numpy.log(1e-5 + psample) - (1.-psample) * numpy.log(1. - psample + 1e-5)
         hq += numpy.sum(temp, axis=1)
 
     # copy into negative phase buffers to measure energy

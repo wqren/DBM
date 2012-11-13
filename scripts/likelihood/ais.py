@@ -52,6 +52,18 @@ from pylearn2.datasets import mnist
 floatX = theano.config.floatX
 logging.basicConfig(level=logging.INFO)
 
+"""
+class pylearn2_svm_callback(TrainingCallback):
+
+    def __init__(self, model, test=None):
+        self.test = test
+        model.results['best_updates'] = 0
+        model.results['best_train_ll'] = -numpy.Inf
+
+    def __call__(self, model, train, algorithm):
+        (train_ll, logz) = estimate_likelihood(model, train, large_ais=False)
+"""
+ 
 def neg_sampling(dbm, nsamples, beta=1.0, h1bias_a=None):
     """
     Generate a sample from the intermediate distribution defined at inverse
@@ -190,7 +202,7 @@ def compute_log_za(pa_h1_bias):
     return log_za
 
 
-def compute_test_set_likelihood(model, energy_fn, inference_fn, log_z, test_x):
+def compute_likelihood_given_logz(model, energy_fn, inference_fn, log_z, test_x):
     """
     Compute test set likelihood as below, where q is the variational
     approximation to the posterior p(h1,h2|v).
@@ -250,7 +262,7 @@ def compute_test_set_likelihood(model, energy_fn, inference_fn, log_z, test_x):
     return likelihood
 
 
-def main(model, data):
+def estimate_likelihood(model, trainset, testset, large_ais=False, log_z=None):
     """
     Compute estimate of log-partition function and likelihood of data.X.
 
@@ -258,6 +270,8 @@ def main(model, data):
     -------
     model: dbm.DBM
     data: pylearn2 dataset
+    large_ais: if True, will use 3e5 chains, instead of 3e4
+    log_z: log-partition function (if precomputed)
 
     Returns:
     --------
@@ -283,9 +297,9 @@ def main(model, data):
     inference_fn = theano.function([], new_psamples)
 
     # Configure baserate bias for h1.
-    temp = numpy.asarray(data.X, dtype=floatX)
-    mean_data = numpy.mean(temp, axis=0)
-    model.setup_pos_func(numpy.tile(mean_data[None,:], (model.batch_size,1)))
+    temp = numpy.asarray(trainset.X, dtype=floatX)
+    mean_train = numpy.mean(temp, axis=0)
+    model.setup_pos_func(numpy.tile(mean_train[None,:], (model.batch_size,1)))
     psamples = inference_fn()
     mean_pos_h1 = numpy.minimum(psamples[1], 1-1e-5)
     mean_pos_h1 = numpy.maximum(mean_pos_h1, 1e-5)
@@ -318,24 +332,33 @@ def main(model, data):
 
 
     # default configuration for interpolating distributions
-    betas = numpy.cast[floatX](
-        numpy.hstack((numpy.linspace(0, 0.5, 1e4),
-                     numpy.linspace(0.5, 0.9, 1e4),
-                     numpy.linspace(0.9, 1.0, 1e4))))
+    if large_ais:
+        betas = numpy.cast[floatX](
+            numpy.hstack((numpy.linspace(0, 0.5, 1e5),
+                         numpy.linspace(0.5, 0.9, 1e5),
+                         numpy.linspace(0.9, 1.0, 1e5))))
+    else:
+        betas = numpy.cast[floatX](
+            numpy.hstack((numpy.linspace(0, 0.5, 1e4),
+                         numpy.linspace(0.5, 0.9, 1e4),
+                         numpy.linspace(0.9, 1.0, 1e4))))
 
-    log_ais_w = compute_log_ais_weights(free_energy_fn, sample_fn, betas)
-    dlogz, var_dlogz = estimate_from_weights(log_ais_w)
-    log_za = compute_log_za(h1bias_a)
-    log_z = log_za + dlogz
-    logging.info('log_z = %f' % log_z)
-    logging.info('log_za = %f' % log_za)
-    logging.info('dlogz = %f' % dlogz)
-    logging.info('var_dlogz = %f' % var_dlogz)
+    if log_z is None:
+        log_ais_w = compute_log_ais_weights(free_energy_fn, sample_fn, betas)
+        dlogz, var_dlogz = estimate_from_weights(log_ais_w)
+        log_za = compute_log_za(h1bias_a)
+        log_z = log_za + dlogz
+        logging.info('log_z = %f' % log_z)
+        logging.info('log_za = %f' % log_za)
+        logging.info('dlogz = %f' % dlogz)
+        logging.info('var_dlogz = %f' % var_dlogz)
 
-    nll = compute_test_set_likelihood(model, energy_fn, inference_fn, log_z, data.X)
-    logging.info('Test set likelihood = %f' % nll)
+    train_ll = compute_likelihood_given_logz(model, energy_fn, inference_fn, log_z, trainset.X)
+    logging.info('Training likelihood = %f' % train_ll)
+    test_ll = compute_likelihood_given_logz(model, energy_fn, inference_fn, log_z, testset.X)
+    logging.info('Test likelihood = %f' % test_ll)
 
-    return (nll, log_z)
+    return (train_ll, test_ll, log_z)
 
 def uncenter(model):
     model.flags['enable_centering'] = False
@@ -354,7 +377,7 @@ if __name__ == '__main__':
 
     parser = optparse.OptionParser()
     parser.add_option('-m', '--model', action='store', type='string', dest='path')
-    parser.add_option('--dataset', action='store', type='string', dest='dataset')
+    parser.add_option('--large', action='store_true', dest='large', default=False)
     (opts, args) = parser.parse_args()
 
     # Load model and retrieve parameters.
@@ -362,7 +385,7 @@ if __name__ == '__main__':
     model = uncenter(model)
     model.do_theano()
     # Load dataset.
-    assert opts.dataset in ['train','test']
-    dataset = mnist.MNIST(opts.dataset, binarize=True)
+    trainset = mnist.MNIST('train', binarize=True)
+    testset = mnist.MNIST('test', binarize=True)
 
-    main(model, dataset)
+    estimate_likelihood(model, trainset, testset, large_ais=opts.large)

@@ -102,4 +102,16 @@ def compute_Lx_batches(v, g, h, xw_mat, xv_mat, xa, xb, xc, bs, cbs):
     accs2 = compute_Lx_term2(v,g,h,xw,xv,xa,xb,xc)
     return [x - y for x, y in zip(accs1, accs2)]
 
+def compute_L_diag(v, g, h):
+    Minv = T.cast(1./v.shape[0], floatX)
+    (M, N0, N1, N2) = (v.shape[0], v.shape[1], g.shape[1], h.shape[1])
 
+    dE_dW = T.dot(v.T, g).flatten() * Minv
+    dE_dV = T.dot(g.T, h).flatten() * Minv
+    Lww = T.mean(star_prod(v,g)**2, axis=0) - dE_dW**2
+    Lvv = T.mean(star_prod(g,h)**2, axis=0) - dE_dV**2
+    Laa = T.mean(v**2, axis=0) - T.mean(v, axis=0)**2
+    Lbb = T.mean(g**2, axis=0) - T.mean(g, axis=0)**2
+    Lcc = T.mean(h**2, axis=0) - T.mean(h, axis=0)**2
+
+    return [Lww.reshape((N0,N1)), Lvv.reshape((N1,N2)), Laa, Lbb, Lcc]

@@ -27,7 +27,7 @@ class DBM(Model, Block):
     """Bilinear Restricted Boltzmann Machine (RBM)  """
 
 
-    def __init__(self, input = None, n_u=[100,100], enable={},
+    def __init__(self, input = None, n_u=[100,100], enable={}, load_from=None,
             iscales=None, clip_min={}, clip_max={},
             pos_mf_steps=1, pos_sample_steps=0, neg_sample_steps=1, 
             lr = 1e-3, lr_anneal_coeff=0, lr_timestamp=None, lr_mults = {},
@@ -38,7 +38,8 @@ class DBM(Model, Block):
             compile=True,
             seed=1241234,
             sp_targ_h = None, sp_weight_h=None, sp_pos_k = 5,
-            my_save_path=None, save_at=None, save_every=None):
+            my_save_path=None, save_at=None, save_every=None,
+            max_updates=1e6):
         """
         :param n_u: list, containing number of units per layer. n_u[0] contains number
          of visible units, while n_u[i] (with i > 0) contains number of hid. units at layer i.
@@ -118,6 +119,9 @@ class DBM(Model, Block):
         self.examples_seen = 0                   # incremented on every training example
         self.force_batch_size = batch_size       # force minibatch size
 
+        if load_from:
+            self.load_parameters(fname=load_from)
+
         if compile: self.do_theano()
 
     def init_parameters(self):
@@ -133,6 +137,30 @@ class DBM(Model, Block):
         # Establish list of learnt model parameters.
         self.params  = [Wi for Wi in self.W[1:]]
         self.params += [bi for bi in self.bias]
+
+    def load_parameters(self, fname):
+        # load model
+        fp = open(fname)
+        model = pickle.load(fp)
+        fp.close()
+        # overwrite local parameters
+        for (m_wi, wi) in zip(model.W[1:], self.W[1:]):
+            wi.set_value(m_wi.get_value())
+        for (m_bi, bi) in zip(model.bias, self.bias):
+            bi.set_value(m_bi.get_value())
+        for (m_offi, offi) in zip(model.offset, self.offset):
+            offi.set_value(m_offi.get_value())
+        self.examples_seen = model.examples_seen
+        self.batches_seen = model.batches_seen
+        # load negative phase particles
+        mi = 0
+        for k in xrange(self.depth):
+            nsamples_k = self.nsamples[k].get_value()
+            m_nsamples_k = model.nsamples[k].get_value()
+            for i in xrange(self.batch_size):
+                nsamples_k[i,:] = m_nsamples_k[mi, :]
+                mi = (mi + 1) % model.batch_size
+            self.nsamples[k].set_value(nsamples_k)
 
     def init_dparameters(self):
         # Create shared variables for model parameters.
@@ -213,6 +241,8 @@ class DBM(Model, Block):
             xinit = self.dparams if self.flags['enable_warm_start'] else None
             minres_output, natgrad_updates = self.get_natural_direction(
                     ml_cost, self.nsamples, xinit = xinit)
+        elif self.flags['enable_natural_diag']:
+            self.get_natural_diag_direction(ml_cost, self.nsamples)
         learning_grads = utils_cost.compute_gradients(ml_cost, reg_cost)
 
         ##
@@ -257,6 +287,10 @@ class DBM(Model, Block):
 
         # Before we start learning, make sure constraints are enforced
         self.enforce_constraints()
+
+        if not hasattr(self, 'max_updates'):
+            self.max_updates = 1e6
+        return self.batches_seen < self.max_updates
 
 
     def train_batch(self, dataset, batch_size):
@@ -605,6 +639,17 @@ class DBM(Model, Block):
             updates[self.dbias[2]] = deltas[4]
         return updates
 
+    def get_natural_diag_direction(self, ml_cost, nsamples):
+        assert self.depth == 3
+        damp = self.minres_params['damp']
+        cnsamples = self.center_samples(nsamples)
+        rvals = natural.compute_L_diag(*nsamples)
+        ml_cost.grads[self.W[1]] *= 1./(rvals[0] + damp)
+        ml_cost.grads[self.W[2]] *= 1./(rvals[1] + damp)
+        ml_cost.grads[self.bias[0]] *= 1./(rvals[2] + damp)
+        ml_cost.grads[self.bias[1]] *= 1./(rvals[3] + damp)
+        ml_cost.grads[self.bias[2]] *= 1./(rvals[4] + damp)
+
     def get_natural_direction(self, ml_cost, nsamples, xinit=None):
         """
         Returns: list
@@ -664,3 +709,8 @@ class DBM(Model, Block):
         ml_cost.grads[self.bias[2]] = newgrads[4]
         
         return rvals[1:], self.get_dparam_updates(*newgrads)
+
+    def __call__(self, v):
+        pass
+
+

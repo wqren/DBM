@@ -384,6 +384,29 @@ def test_math():
     EL[idx['cs']:idx['ce'], idx['bs']:idx['be']] = EL[idx['bs']:idx['be'], idx['cs']:idx['ce']].T
     numpy.testing.assert_almost_equal(L, EL, decimal=3)
 
+def test_compute_Ldiag():
+
+    ## now compare against theano version
+    vv = T.matrix()
+    gg = T.matrix()
+    hh = T.matrix()
+    # test compute_Lx
+    LL = natural.compute_L_diag(vv, gg, hh)
+    f = theano.function([vv, gg, hh], LL)
+    rvals = f(v, g, h)
+    # compare against baseline
+    Ldiag = numpy.diag(L)
+    Ldiag_w = Ldiag[:N0*N1]
+    Ldiag_v = Ldiag[N0*N1 : N0*N1 + N1*N2]
+    Ldiag_a = Ldiag[-N2-N1-N0:-N2-N1]
+    Ldiag_b = Ldiag[-N2-N1:-N2]
+    Ldiag_c = Ldiag[-N2:]
+    numpy.testing.assert_almost_equal(Ldiag_w, rvals[0], decimal=3)
+    numpy.testing.assert_almost_equal(Ldiag_v, rvals[1], decimal=3)
+    numpy.testing.assert_almost_equal(Ldiag_a, rvals[2], decimal=3)
+    numpy.testing.assert_almost_equal(Ldiag_b, rvals[3], decimal=3)
+    numpy.testing.assert_almost_equal(Ldiag_c, rvals[4], decimal=3)
+
 
 def test_minres():
     vv = theano.shared(v, name='v')
