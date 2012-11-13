@@ -82,6 +82,7 @@ class DBM(Model, Block):
         flags.setdefault('enable_natural', False)
         flags.setdefault('enable_warm_start', False)
         flags.setdefault('mlbiases', False)
+        flags.setdefault('precondition', None)
         ### DUMP INITIALIZATION PARAMETERS TO OBJECT ###
         for (k,v) in locals().iteritems():
             if k!='self': setattr(self,k,v)
@@ -240,7 +241,9 @@ class DBM(Model, Block):
         if self.flags['enable_natural']:
             xinit = self.dparams if self.flags['enable_warm_start'] else None
             minres_output, natgrad_updates = self.get_natural_direction(
-                    ml_cost, self.nsamples, xinit = xinit)
+                    ml_cost, self.nsamples,
+                    xinit = xinit,
+                    precondition = self.flags['precondition'])
         elif self.flags['enable_natural_diag']:
             self.get_natural_diag_direction(ml_cost, self.nsamples)
         learning_grads = utils_cost.compute_gradients(ml_cost, reg_cost)
@@ -650,7 +653,8 @@ class DBM(Model, Block):
         ml_cost.grads[self.bias[1]] *= 1./(rvals[3] + damp)
         ml_cost.grads[self.bias[2]] *= 1./(rvals[4] + damp)
 
-    def get_natural_direction(self, ml_cost, nsamples, xinit=None):
+    def get_natural_direction(self, ml_cost, nsamples, xinit=None,
+                              precondition=None):
         """
         Returns: list
             See minres documentation for the meaning of each return value.
@@ -663,6 +667,7 @@ class DBM(Model, Block):
             rvals[7]: xnorm
             rvals[8]: Axnorm
         """
+        assert precondition in ['jacobi']
         cnsamples = self.center_samples(nsamples)
 
         assert self.depth == 3
@@ -671,7 +676,7 @@ class DBM(Model, Block):
                   ml_cost.grads[self.bias[0]],
                   ml_cost.grads[self.bias[1]],
                   ml_cost.grads[self.bias[2]]]
-
+       
         if self.computational_bs > 0:
             def Lx_func(*args):
                  Lneg_x = natural.generic_compute_Lx_batches(
@@ -689,6 +694,12 @@ class DBM(Model, Block):
                         args[len(self.W)-1:])
                 return Lneg_x
 
+        Ms = None
+        if precondition == 'jacobi':
+            Ldiag_terms = natural.compute_L_diag(nsamples)
+            damp = self.minres_params['damp']
+            Ms = [Ldiag_term + damp for Ldiag_term in Ldiag_terms]
+
         rvals = minres.minres(
                 Lx_func,
                 inputs,
@@ -696,6 +707,7 @@ class DBM(Model, Block):
                 damp = self.minres_params['damp'],
                 maxit = self.minres_params['maxit'],
                 xinit = xinit,
+                Ms = Ms,
                 profile=0)
 
         newgrads = rvals[0]

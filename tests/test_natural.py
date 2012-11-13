@@ -555,6 +555,37 @@ def test_minres_with_xinit():
     numpy.testing.assert_almost_equal(Linv_x_c, new_dc, decimal=1)
 
 
+def test_minres_with_jacobi():
+    vv = theano.shared(v, name='v')
+    gg = theano.shared(g, name='g')
+    hh = theano.shared(h, name='h')
+    dw = T.dot(v.T,g) / M
+    dv = T.dot(g.T,h) / M
+    da = T.mean(v, axis=0)
+    db = T.mean(g, axis=0)
+    dc = T.mean(h, axis=0)
+   
+    Ldiag_terms = natural.generic_compute_L_diag([vv,gg,hh])
+    Ms = [Ldiag_term + 0.1 for Ldiag_term in Ldiag_terms]
+
+    newgrads = minres.minres(
+            lambda xw, xv, xa, xb, xc: natural.compute_Lx(vv,gg,hh,xw,xv,xa,xb,xc),
+            [dw, dv, da, db, dc],
+            rtol=1e-5,
+            damp = 0.,
+            maxit = 30,
+            Ms = Ms,
+            profile=0)[0]
+
+    f = theano.function([], newgrads)
+    [new_dw, new_dv, new_da, new_db, new_dc] = f()
+    numpy.testing.assert_almost_equal(Linv_x_w, new_dw, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_v, new_dv, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_a, new_da, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_b, new_db, decimal=1)
+    numpy.testing.assert_almost_equal(Linv_x_c, new_dc, decimal=1)
+
+
 def test_linearcg():
     vv = theano.shared(v, name='v')
     gg = theano.shared(g, name='g')
