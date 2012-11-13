@@ -455,8 +455,8 @@ def test_compute_Ldiag():
     rvals = f(v, g, h)
     # compare against baseline
     Ldiag = numpy.diag(L)
-    Ldiag_w = Ldiag[:N0*N1]
-    Ldiag_v = Ldiag[N0*N1 : N0*N1 + N1*N2]
+    Ldiag_w = Ldiag[:N0*N1].reshape(N0,N1)
+    Ldiag_v = Ldiag[N0*N1 : N0*N1 + N1*N2].reshape(N1,N2)
     Ldiag_a = Ldiag[-N2-N1-N0:-N2-N1]
     Ldiag_b = Ldiag[-N2-N1:-N2]
     Ldiag_c = Ldiag[-N2:]
