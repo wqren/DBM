@@ -9,6 +9,29 @@ def star_prod(s1, s2):
     return (s1.dimshuffle(0,1,'x') * s2.dimshuffle(0,'x',1)).flatten(ndim=2)
 
 
+def generic_compute_Lx_term1(samples, weights, biases):
+    Minv = numpy.float32(1.)/samples[0].shape[0]
+    Minv = Minv.astype(floatX)
+
+    prods = [star_prod(x,y)
+            for x,y in zip(samples[:-1],samples[1:])]
+    vWs = [T.dot(x, y.flatten()) for x,y in zip(prods, weights)]
+    vbs = [T.dot(x, y) for x,y in zip(samples, biases)]
+    def param_rows(lhs_term, rhs_terms, orig_param):
+        param_row = 0.
+        for rhs_term in rhs_terms:
+            param_row += T.dot(lhs_term, rhs_term)
+        if orig_param.ndim > 1:
+            return param_row.reshape(
+                (orig_param.shape[0], orig_param.shape[1])) * Minv
+        else:
+            return param_row * Minv
+    Ws_rows = [param_rows(x.T, vWs + vbs, y) for x,y in zip(prods, weights)]
+    bs_rows = [param_rows(x.T, vWs + vbs, y) for x,y in zip(samples, biases)]
+    return Ws_rows + bs_rows
+
+
+
 def compute_Lx_term1(v, g, h, xw, xv, xa, xb, xc):
     Minv = T.cast(1./v.shape[0], floatX)
     (N0, N1, N2) = (v.shape[1], g.shape[1], h.shape[1])
@@ -35,6 +58,22 @@ def compute_Lx_term1(v, g, h, xw, xv, xa, xb, xc):
     Lc_rows = param_rows(h.T, rhs_terms)
 
     return [Lw_rows, Lv_rows, La_rows, Lb_rows, Lc_rows]
+
+def generic_compute_Lx_term2(samples, weights, biases):
+    M2inv = numpy.float32(1.)/samples[0].shape[0]**2
+    M2inv = M2inv.astype(floatX)
+    Lweights = [T.dot(x.T,y).flatten() for x,y in zip(samples[:-1], samples[1:])]
+    Lbiases = [T.sum(x, axis=0) for x in samples]
+    rhs_term = sum(T.dot(x,y.flatten()) for x,y in zip(Lweights + Lbiases,
+                                             weights + biases))
+    rval_weights = []
+    for Lw, w in zip(Lweights, weights):
+        rval_weights.append(
+            (Lw * rhs_term).reshape((w.shape[0], w.shape[1])) * M2inv)
+
+    rval_biases = [ x*rhs_term * M2inv for x in Lbiases]
+    return rval_weights + rval_biases
+
 
 
 def compute_Lx_term2(v, g, h, xw, xv, xa, xb, xc):
@@ -115,3 +154,40 @@ def compute_L_diag(v, g, h):
     Lcc = T.mean(h**2, axis=0) - T.mean(h, axis=0)**2
 
     return [Lww.reshape((N0,N1)), Lvv.reshape((N1,N2)), Laa, Lbb, Lcc]
+
+def generic_compute_Lx(samples, weights, biases):
+     terms1 = generic_compute_Lx_term1(samples, weights, biases)
+     terms2 = generic_compute_Lx_term2(samples, weights, biases)
+     rval = []
+     for (term1, term2) in zip(terms1, terms2):
+         rval += [term1 - term2]
+     return rval
+
+def generic_compute_Lx_batches(samples, weights, biases, bs, cbs):
+    tsamples = [x.reshape((bs//cbs, cbs, x.shape[1])) for x in samples]
+    final_ws = [T.unbroadcast(T.shape_padleft(T.zeros_like(x)),0)
+                for x in weights]
+    final_bs = [T.unbroadcast(T.shape_padleft(T.zeros_like(x)),0)
+                for x in biases]
+    n_samples = len(samples)
+    n_weights = len(weights)
+    n_biases = len(biases)
+    def comp_step(*args):
+        lsamples = args[:n_samples]
+        terms1 = generic_compute_Lx_term1(lsamples, weights, biases)
+        rval = []
+        for (term1, acc) in zip(terms1, args[n_samples:]):
+            rval += [acc + term1]
+        return rval
+
+    rvals,_ = theano.sandbox.scan.scan(
+        comp_step,
+        sequences=tsamples,
+        states=final_ws + final_bs,
+        n_steps=bs // cbs,
+        profile=0,
+        mode=theano.Mode(linker='cvm_nogc'),
+        flags=['no_optimization'] )
+    accs1 = [x[0]/numpy.float32(bs//cbs) for x in rvals]
+    accs2 = generic_compute_Lx_term2(samples,weights,biases)
+    return [x - y for x, y in zip(accs1, accs2)]
