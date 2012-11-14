@@ -84,6 +84,11 @@ class DBM(Model, Block):
         flags.setdefault('mlbiases', False)
         flags.setdefault('precondition', None)
         if flags['precondition'] == 'None': flags['precondition'] = None
+       
+        self.jobman_channel = None
+        self.jobman_state = {}
+        self.register_names_to_del(['jobman_channel'])
+
         ### DUMP INITIALIZATION PARAMETERS TO OBJECT ###
         for (k,v) in locals().iteritems():
             if k!='self': setattr(self,k,v)

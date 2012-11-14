@@ -6,13 +6,6 @@ from pylearn2.scripts.jobman import experiment
 
 rng = numpy.random.RandomState(4312987)
 
-def result_extractor(train_obj):
-    """
-    This is a user specific function, that is used by jobman to extract results
-    The returned dictionary will be saved in state.results
-    """
-    return train_obj.model.results
-
 if __name__ == '__main__':
     db = api0.open_db('postgres://gershwin.iro.umontreal.ca/desjagui_db/aistats12_mnist_sgd')
 
@@ -97,8 +90,6 @@ if __name__ == '__main__':
             }
     """
 
-    state.extract_results = "DBM.scripts.mnist.schedule_mnist_sgd_centered.result_extractor"
-
     njobs = 100
     for lr in [5e-3, 1e-3, 1e-4]:
         for batch_size in [25, 128, 256]:
@@ -130,7 +121,7 @@ if __name__ == '__main__':
                         'maxit': 80,
                         'switch_threshold': 0,
                         'switch_at': 0,
-                        'ais_interval': 10,
+                        'ais_interval': 1,
                     }
                     
                     sql.insert_job(

@@ -114,6 +114,9 @@ class pylearn2_ais_callback(TrainingCallback):
                     self.switch_to_full_natural(model)
             self.log(model, train_ll, test_ll, logz)
 
+            if model.jobman_channel:
+                model.jobman_channel.save()
+
     def log(self, model, train_ll, test_ll, logz):
 
         # log to database
@@ -130,7 +133,7 @@ class pylearn2_ais_callback(TrainingCallback):
             self.jobman_results['best_train_ll'] = self.jobman_results['train_ll']
             self.jobman_results['best_test_ll'] = self.jobman_results['test_ll']
             self.jobman_results['best_logz'] = self.jobman_results['logz']
-        model.results = self.jobman_results
+        model.jobman_state.update(self.jobman_results)
 
         # save to text file
         fp = open('ais_callback.log','a')
@@ -484,6 +487,7 @@ def recenter(model):
     # backup biases for online AIS estimates
     for i in xrange(model.depth):
         model.bias[i].set_value(model.backup[model.bias[i]])
+    model.flags['enable_centering'] = True
     del model.backup
     return model
 

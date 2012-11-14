@@ -104,7 +104,7 @@ if __name__ == '__main__':
         for batch_size in [25, 128, 256]:
             for (pos_mf_steps, pos_sample_steps) in [(5,0),(0,5)]:
                 for iscale_bias in [0]:
-                    for damp in [0.1,0.04]:
+                    for damp in [0.1]:
                         state.hyper_parameters = {
                             'binarize': 1,
                             'nu1': 400,
