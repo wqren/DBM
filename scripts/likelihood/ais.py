@@ -103,18 +103,21 @@ class pylearn2_ais_callback(TrainingCallback):
                     self.trainset, self.testset, large_ais=False)
         model = recenter(model)
 
+        switch = False
         if self.ncalls > 0 and (not self.has_switched):
             if self.switch_threshold:
                 improv = train_ll - self.jobman_results['train_ll']
                 if improv < abs(self.switch_threshold * self.jobman_results['train_ll']):
-                    model.switch_to_full_natural()
-                    self.jobman_results['switch_epoch'] = model.epochs
-                    self.has_switched = True
+                    switch = True
             elif self.switch_at:
                 if model.epochs >= self.switch_at:
-                    model.switch_to_full_natural()
-                    self.jobman_results['switch_epoch'] = model.epochs
-                    self.has_switched = True
+                    switch = True
+
+            if switch:
+                model.switch_to_full_natural()
+                self.jobman_results['switch_epoch'] = model.epochs
+                self.has_switched = True
+                self.ais_interval = 1
 
         self.log(model, train_ll, test_ll, logz)
         self.ncalls += 1

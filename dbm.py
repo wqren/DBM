@@ -705,7 +705,6 @@ class DBM(Model, Block):
         return rvals[1:], self.get_dparam_updates(*newgrads)
 
     def switch_to_full_natural(self):
-        import pdb; pdb.set_trace()
         self.flags['enable_natural'] = True
         self.flags['enable_natural_diag'] = False
         self.set_batch_size(256)
