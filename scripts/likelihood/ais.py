@@ -373,6 +373,10 @@ def estimate_likelihood(model, trainset, testset, large_ais=False, log_z=None):
         Estimate of log-partition function of `model`.
     """
 
+    #BACKUP NSAMPLES AND PSAMPLES
+    backup_psamples = [psample.get_value() for psample in model.psamples]
+    backup_nsamples = [nsample.get_value() for nsample in model.nsamples]
+
     ##########################
     ## BUILD THEANO FUNCTIONS
     ##########################
@@ -449,6 +453,10 @@ def estimate_likelihood(model, trainset, testset, large_ais=False, log_z=None):
     logging.info('Training likelihood = %f' % train_ll)
     test_ll = compute_likelihood_given_logz(model, energy_fn, inference_fn, log_z, testset.X)
     logging.info('Test likelihood = %f' % test_ll)
+
+    # RESTORE NSAMPLES AND PSAMPLES
+    [psample.set_value(backup_psample) for (psample, backup_psample) in zip(model.psamples, backup_psamples)]
+    [nsample.set_value(backup_nsample) for (nsample, backup_nsample) in zip(model.nsamples, backup_nsamples)]
 
     return (train_ll, test_ll, log_z)
 
