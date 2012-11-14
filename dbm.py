@@ -154,7 +154,6 @@ class DBM(Model, Block):
             bi.set_value(m_bi.get_value())
         for (m_offi, offi) in zip(model.offset, self.offset):
             offi.set_value(m_offi.get_value())
-        self.examples_seen = model.examples_seen
         self.batches_seen = model.batches_seen
         self.epochs = model.epochs
         # load negative phase particles
