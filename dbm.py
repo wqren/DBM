@@ -83,6 +83,7 @@ class DBM(Model, Block):
         flags.setdefault('enable_warm_start', False)
         flags.setdefault('mlbiases', False)
         flags.setdefault('precondition', None)
+        if flags['precondition'] == 'None': flags['precondition'] = None
         ### DUMP INITIALIZATION PARAMETERS TO OBJECT ###
         for (k,v) in locals().iteritems():
             if k!='self': setattr(self,k,v)
