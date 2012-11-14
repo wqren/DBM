@@ -667,7 +667,7 @@ class DBM(Model, Block):
                          cnsamples,
                          args[:len(self.W)-1],
                          args[len(self.W)-1:],
-                         self.force_batch_size,
+                         self.batch_size,
                          self.computational_bs)
                 return Lneg_x
         else:
@@ -730,7 +730,6 @@ class DBM(Model, Block):
             self.nsamples[k].set_value(new_nsample)
 
         self.batch_size = batch_size
-        self.force_batch_size = batch_size
         self.do_theano()
 
     def __call__(self, v):
