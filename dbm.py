@@ -1,6 +1,7 @@
 import os
 import numpy
 import pickle
+import time
 from scipy import stats
 
 import theano
@@ -114,11 +115,8 @@ class DBM(Model, Block):
             self.lr_mults_it[k] = tools.HyperParamIterator(lr_timestamp, lr_mults[k])
             self.lr_mults_shrd[k] = sharedX(self.lr_mults_it[k].value, name='lr_mults_shrd'+k)
 
-        # counters used by pylearn2 trainers
-        self.batches_seen = 0                    # incremented on every batch
-        self.examples_seen = 0                   # incremented on every training example
-        self.epoch = 0
-        self.force_batch_size = batch_size       # force minibatch size
+        # counter for CPU-time
+        self.cpu_time = 0.
 
         if load_from:
             self.load_parameters(fname=load_from)
@@ -157,7 +155,7 @@ class DBM(Model, Block):
             offi.set_value(m_offi.get_value())
         self.examples_seen = model.examples_seen
         self.batches_seen = model.batches_seen
-        self.epoch = model.epoch
+        self.epochs = model.epochs
         # load negative phase particles
         mi = 0
         for k in xrange(self.depth):
@@ -296,10 +294,6 @@ class DBM(Model, Block):
         # Before we start learning, make sure constraints are enforced
         self.enforce_constraints()
 
-        if not hasattr(self, 'max_updates'):
-            self.max_updates = 1e6
-        return self.batches_seen < self.max_updates
-
 
     def train_batch(self, dataset, batch_size):
         """
@@ -344,11 +338,13 @@ class DBM(Model, Block):
         self.lr_shrd.set_value(self.lr / (1. + self.lr_anneal_coeff * self.batches_seen))
 
         # perform variational/sampling positive phase
+        t1 = time.time()
         self.setup_pos_func(x)
         self.pos_func()
         for i in xrange(self.neg_sample_steps):
             self.sample_neg_func()
         rval = self.batch_train_func()
+        self.cpu_time += time.time() - t1
 
         ### LOGGING & DEBUGGING ###
         if self.flags['enable_natural'] and self.batches_seen%100 == 0:
@@ -707,6 +703,35 @@ class DBM(Model, Block):
         ml_cost.grads[self.bias[2]] = newgrads[4]
         
         return rvals[1:], self.get_dparam_updates(*newgrads)
+
+    def switch_to_full_natural(self):
+        import pdb; pdb.set_trace()
+        self.flags['enable_natural'] = True
+        self.flags['enable_natural_diag'] = False
+        self.set_batch_size(256)
+
+    def set_batch_size(self, batch_size):
+        """
+        Change the batch size of a model which has already been initialized.
+        :param batch_size: int. new batch size.
+        """
+        # re-allocate shared variables
+        for k in xrange(self.depth):
+            new_psample = numpy.zeros((batch_size, self.n_u[k])).astype(floatX)
+            self.psamples[k].set_value(new_psample)
+
+            # preserve negative phase particles
+            new_nsample = numpy.zeros((batch_size, self.n_u[k])).astype(floatX)
+            old_nsample = self.nsamples[k].get_value()
+            mi = 0
+            for i in xrange(batch_size):
+                new_nsample[i,:] = old_nsample[mi, :]
+                mi = (mi + 1) % self.batch_size
+            self.nsamples[k].set_value(new_nsample)
+
+        self.batch_size = batch_size
+        self.force_batch_size = batch_size
+        self.do_theano()
 
     def __call__(self, v):
         pass

@@ -52,5 +52,16 @@
             "save_freq": 1,
             "kc": 10,
         },
+        !obj:DBM.scripts.likelihood.ais.pylearn2_ais_callback {
+            "trainset": *data,
+            "testset": !obj:pylearn2.datasets.mnist.MNIST {
+                "which_set": 'test',
+                "one_hot": True,
+                "binarize": True,
+            },
+            #"switch_threshold": None,
+            "switch_at": 30,
+            "ais_interval": 10,
+        }
     ]
 }

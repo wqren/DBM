@@ -43,27 +43,124 @@ importance weights w^(m), given by:
 import numpy
 import logging
 import optparse
+import time
+import pickle
 
 import theano
 import theano.tensor as T
 from pylearn2.utils import serial
 from pylearn2.datasets import mnist
+from pylearn2.training_callbacks.training_callback import TrainingCallback
 
 floatX = theano.config.floatX
 logging.basicConfig(level=logging.INFO)
 
-"""
-class pylearn2_svm_callback(TrainingCallback):
+class pylearn2_ais_callback(TrainingCallback):
 
-    def __init__(self, model, test=None):
-        self.test = test
-        model.results['best_updates'] = 0
-        model.results['best_train_ll'] = -numpy.Inf
+    def __init__(self, trainset, testset,
+                 switch_threshold=None,
+                 switch_at=None,
+                 ais_interval=10):
+
+        self.trainset = trainset
+        self.testset = testset
+        self.switch_threshold = switch_threshold
+        self.switch_at = switch_at
+        self.has_switched = False
+        self.ncalls = 0
+        self.ais_interval = ais_interval
+
+        self.pkl_results = {
+                'epoch': [],
+                'batches_seen': [],
+                'cpu_time': [],
+                'train_ll': [],
+                'test_ll': [],
+                'logz': [],
+                }
+
+        self.jobman_results = {
+                'best_epoch': 0,
+                'best_batches_seen': 0,
+                'best_cpu_time': 0,
+                'best_train_ll': -numpy.Inf,
+                'best_test_ll': -numpy.Inf,
+                'best_logz': 0,
+                'switch_epoch': 0,
+                }
+        fp = open('ais_callback.log','w')
+        fp.write('Epoch\tBatches\tCPU\tTrain\tTest\tlogz\n')
+        fp.close()
 
     def __call__(self, model, train, algorithm):
-        (train_ll, logz) = estimate_likelihood(model, train, large_ais=False)
-"""
- 
+
+        if (self.ncalls % self.ais_interval) != 0:
+            self.ncalls += 1
+            return
+
+        model = uncenter(model)
+        (train_ll, test_ll, logz) = estimate_likelihood(model,
+                    self.trainset, self.testset, large_ais=False)
+        model = recenter(model)
+
+        if self.ncalls > 0 and (not self.has_switched):
+            if self.switch_threshold:
+                improv = train_ll - self.jobman_results['train_ll']
+                if improv < abs(self.switch_threshold * self.jobman_results['train_ll']):
+                    model.switch_to_full_natural()
+                    self.jobman_results['switch_epoch'] = model.epochs
+                    self.has_switched = True
+            elif self.switch_at:
+                if model.epochs >= self.switch_at:
+                    model.switch_to_full_natural()
+                    self.jobman_results['switch_epoch'] = model.epochs
+                    self.has_switched = True
+
+        self.log(model, train_ll, test_ll, logz)
+        self.ncalls += 1
+
+    def log(self, model, train_ll, test_ll, logz):
+
+        # log to database
+        self.jobman_results['epoch'] = model.epochs
+        self.jobman_results['batches_seen'] = model.batches_seen
+        self.jobman_results['cpu_time'] = model.cpu_time
+        self.jobman_results['train_ll'] = train_ll
+        self.jobman_results['test_ll'] = test_ll
+        self.jobman_results['logz'] = logz
+        if train_ll > self.jobman_results['best_train_ll']:
+            self.jobman_results['best_epoch'] = self.jobman_results['epoch']
+            self.jobman_results['best_batches_seen'] = self.jobman_results['batches_seen']
+            self.jobman_results['best_cpu_time'] = self.jobman_results['cpu_time']
+            self.jobman_results['best_train_ll'] = self.jobman_results['train_ll']
+            self.jobman_results['best_test_ll'] = self.jobman_results['test_ll']
+            self.jobman_results['best_logz'] = self.jobman_results['logz']
+        model.results = self.jobman_results
+
+        # save to text file
+        fp = open('ais_callback.log','a')
+        fp.write('%i\t%i\t%f\t%f\t%f\t%f\n' % (
+            self.jobman_results['epoch'],
+            self.jobman_results['batches_seen'],
+            self.jobman_results['cpu_time'],
+            self.jobman_results['train_ll'],
+            self.jobman_results['test_ll'],
+            self.jobman_results['logz']))
+        fp.close()
+
+        # save to pickle file
+        self.pkl_results['epoch'] += [model.epochs]
+        self.pkl_results['batches_seen'] += [model.batches_seen]
+        self.pkl_results['cpu_time'] += [model.cpu_time]
+        self.pkl_results['train_ll'] += [train_ll]
+        self.pkl_results['test_ll'] += [test_ll]
+        self.pkl_results['logz'] += [logz]
+        fp = open('ais_callback.pkl','w')
+        pickle.dump(self.pkl_results, fp)
+        fp.close()
+
+
+
 def neg_sampling(dbm, nsamples, beta=1.0, h1bias_a=None):
     """
     Generate a sample from the intermediate distribution defined at inverse
@@ -102,7 +199,7 @@ def neg_sampling(dbm, nsamples, beta=1.0, h1bias_a=None):
     return new_nsamples
 
 
-def free_energy_at_beta(h1_sample, beta, h1bias_a=None):
+def free_energy_at_beta(model, h1_sample, beta, h1bias_a=None):
     """
     Computes the free-energy of the sample `h1_sample`, for model p_k(h1).
 
@@ -126,7 +223,7 @@ def free_energy_at_beta(h1_sample, beta, h1bias_a=None):
     return fe_bp_h1
 
 
-def compute_log_ais_weights(free_energy_fn, sample_fn, betas):
+def compute_log_ais_weights(model, free_energy_fn, sample_fn, betas):
     """
     Compute log of the AIS weights.
     TODO: remove dependency on global variable model.
@@ -192,7 +289,7 @@ def estimate_from_weights(log_ais_w):
     return dlogz, var_dlogz
 
 
-def compute_log_za(pa_h1_bias):
+def compute_log_za(model, pa_h1_bias):
     """
     Compute the exact partition function of model p_A(h1).
     """
@@ -313,7 +410,7 @@ def estimate_likelihood(model, trainset, testset, large_ais=False, log_z=None):
     sample_fn = theano.function([beta], [], updates=updates, name='sample_func')
 
     ### Build function to compute free-energy of p_k(h1).
-    fe_bp_h1 = free_energy_at_beta(model.nsamples[1], beta, h1bias_a)
+    fe_bp_h1 = free_energy_at_beta(model, model.nsamples[1], beta, h1bias_a)
     free_energy_fn = theano.function([beta], fe_bp_h1)
 
 
@@ -344,9 +441,9 @@ def estimate_likelihood(model, trainset, testset, large_ais=False, log_z=None):
                          numpy.linspace(0.9, 1.0, 1e4))))
 
     if log_z is None:
-        log_ais_w = compute_log_ais_weights(free_energy_fn, sample_fn, betas)
+        log_ais_w = compute_log_ais_weights(model, free_energy_fn, sample_fn, betas)
         dlogz, var_dlogz = estimate_from_weights(log_ais_w)
-        log_za = compute_log_za(h1bias_a)
+        log_za = compute_log_za(model, h1bias_a)
         log_z = log_za + dlogz
         logging.info('log_z = %f' % log_z)
         logging.info('log_za = %f' % log_za)
@@ -361,16 +458,30 @@ def estimate_likelihood(model, trainset, testset, large_ais=False, log_z=None):
     return (train_ll, test_ll, log_z)
 
 def uncenter(model):
+    assert model.depth == 3
     model.flags['enable_centering'] = False
     # assume centering for now
     bias = [bias.get_value() for bias in model.bias]
     offset = [offset.get_value() for offset in model.offset]
     W = [None] + [W.get_value() for W in model.W[1:]]
+
+    # backup biases for online AIS estimates
+    model.backup = {}
+    for i in xrange(model.depth):
+        model.backup[model.bias[i]] = model.bias[i].get_value()
+
     bias[0] -= numpy.dot(offset[1], W[1].T)
     bias[1] -= numpy.dot(offset[0], W[1]) + numpy.dot(offset[2], W[2].T) 
     bias[2] -= numpy.dot(offset[1], W[2])
     for i in xrange(model.depth):
         model.bias[i].set_value(bias[i])
+    return model
+
+def recenter(model):
+    # backup biases for online AIS estimates
+    for i in xrange(model.depth):
+        model.bias[i].set_value(model.backup[model.bias[i]])
+    del model.backup
     return model
 
 if __name__ == '__main__':
