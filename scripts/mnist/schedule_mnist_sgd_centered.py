@@ -71,7 +71,6 @@ if __name__ == '__main__':
                     "save_every": 50000,
                 },
                 "algorithm": !obj:pylearn2.training_algorithms.default.DefaultTrainingAlgorithm {
-                           "batch_size": %(batch_size)i,
                            "batches_per_iter" : 1000,
                            "monitoring_batches": 1,
                            "monitoring_dataset": *data,
@@ -117,7 +116,7 @@ if __name__ == '__main__':
                         'mlbiases': 1,
                         'pos_mf_steps': pos_mf_steps,
                         'pos_sample_steps': pos_sample_steps,
-                        'neg_sample_steps': 1,
+                        'neg_sample_steps': 5,
                         'iscale_w1': 0.,
                         'iscale_w2': 0.,
                         'iscale_bias0': iscale_bias,

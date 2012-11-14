@@ -67,7 +67,6 @@ class pylearn2_ais_callback(TrainingCallback):
         self.switch_threshold = switch_threshold
         self.switch_at = switch_at
         self.has_switched = False
-        self.ncalls = 0
         self.ais_interval = ais_interval
 
         self.pkl_results = {
@@ -92,35 +91,28 @@ class pylearn2_ais_callback(TrainingCallback):
         fp.write('Epoch\tBatches\tCPU\tTrain\tTest\tlogz\n')
         fp.close()
 
+    def switch_to_full_natural(self, model):
+        model.switch_to_full_natural()
+        self.jobman_results['switch_epoch'] = model.epochs
+        self.has_switched = True
+        self.ais_interval = 1
+
     def __call__(self, model, train, algorithm):
 
-        if (self.ncalls % self.ais_interval) != 0:
-            self.ncalls += 1
-            return
+        if self.switch_at and (not self.has_switched) and model.epochs >= self.switch_at:
+            self.switch_to_full_natural(model)
 
-        model = uncenter(model)
-        (train_ll, test_ll, logz) = estimate_likelihood(model,
-                    self.trainset, self.testset, large_ais=False)
-        model = recenter(model)
-
-        switch = False
-        if self.ncalls > 0 and (not self.has_switched):
-            if self.switch_threshold:
+        # measure AIS periodically
+        if (model.epochs % self.ais_interval) == 0:
+            model = uncenter(model)
+            (train_ll, test_ll, logz) = estimate_likelihood(model,
+                        self.trainset, self.testset, large_ais=False)
+            model = recenter(model)
+            if self.switch_threshold and model.epochs > 0 and (not self.has_switched):
                 improv = train_ll - self.jobman_results['train_ll']
                 if improv < abs(self.switch_threshold * self.jobman_results['train_ll']):
-                    switch = True
-            elif self.switch_at:
-                if model.epochs >= self.switch_at:
-                    switch = True
-
-            if switch:
-                model.switch_to_full_natural()
-                self.jobman_results['switch_epoch'] = model.epochs
-                self.has_switched = True
-                self.ais_interval = 1
-
-        self.log(model, train_ll, test_ll, logz)
-        self.ncalls += 1
+                    self.switch_to_full_natural(model)
+            self.log(model, train_ll, test_ll, logz)
 
     def log(self, model, train_ll, test_ll, logz):
 

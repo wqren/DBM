@@ -106,6 +106,7 @@ class DBM(Model, Block):
         # configure input-space (?new pylearn2 feature?)
         self.input_space = VectorSpace(n_u[0])
         self.output_space = VectorSpace(n_u[-1])
+        self.force_batch_size = batch_size
 
         # learning rate - implemented as shared parameter for GPU
         self.lr_shrd = sharedX(lr, name='lr_shrd')
@@ -679,7 +680,7 @@ class DBM(Model, Block):
 
         Ms = None
         if precondition == 'jacobi':
-            Ldiag_terms = natural.compute_L_diag(nsamples)
+            Ldiag_terms = natural.generic_compute_L_diag(nsamples)
             damp = self.minres_params['damp']
             Ms = [Ldiag_term + damp for Ldiag_term in Ldiag_terms]
 
@@ -729,7 +730,11 @@ class DBM(Model, Block):
             self.nsamples[k].set_value(new_nsample)
 
         self.batch_size = batch_size
+        self.force_batch_size = batch_size
         self.do_theano()
+        for i in xrange(len(self.monitor._batch_size)):
+            self.monitor._batch_size[i] = batch_size
+        self.monitor.redo_theano()
 
     def __call__(self, v):
         pass
