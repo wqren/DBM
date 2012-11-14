@@ -121,7 +121,7 @@ if __name__ == '__main__':
                         'maxit': 80,
                         'switch_threshold': 0,
                         'switch_at': 0,
-                        'ais_interval': 1,
+                        'ais_interval': 10,
                     }
                     
                     sql.insert_job(
