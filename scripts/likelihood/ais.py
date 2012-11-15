@@ -1,22 +1,22 @@
 """
 This script implements Annealed Importance Sampling for estimating the partition
-function of a 3-layer DBM, as described in:
+function of an n-layer DBM, as described in:
 On the Quantitative Analysis of Deep Belief Networks, Salakhutdinov & Murray
 Deep Boltzmann Machines, Salakhutdinov & Hinton.
 
+Denote H={h1,h2,h3,...,hK} the set of all hidden layers. Further define He to
+be the set of of all even-numbered layers, and Ho, the set of all odd-numbered
+layers. For notational simplicity, we define h0:=v.
+
 The DBM energy function being considered is the following:
-    E(v, h1, h2) = - v^T W1 h1 - h1^T W2 h2 - v^T b0 - h1^T b1 - h2^T b2
+    E(v, H) = -\sum_{k=1}^{K} h_{k-1}^T Wk hk -\sum_{k=0}^K hk^T bk
 
 This implementation works by interpolating between:
 
-* the target distribution p_B(h1), obtained by marginalizing h0 and h2:
-  p_B(h1) = \sum_{h0,h2} p(v, h1, h2)
-          = 1/Z_B \exp(\sum_j h1_j b1_j)
-                  \prod_i (1 + \exp(\beta_k \sum_j (b0_i + h1_j W1_ij)))
-                  \prod_l (1 + \exp(\beta_k \sum_j (b2_l + h1_j W2_jl)))
+* the target distribution p_B(v), with free energy Fe_B(v, He) obtained by
+  marginalizing all odd layers.  TODO
 
-* the baserate distribution p_A(h1):
-  p_A(h1) = 1/Z_A \exp(- h1^T b1_A)
+* the baserate distribution p_A(h1): TODO
 
 * using the interpolating distributions p_k(h^1) defined as:
   p_k*(h1) \proto p*_A^(1 - \beta_k) p*_B^(beta_k).
@@ -56,8 +56,17 @@ from pylearn2.training_callbacks.training_callback import TrainingCallback
 floatX = theano.config.floatX
 logging.basicConfig(level=logging.INFO)
 
+   
+def _sample_even_odd(dbm, samples, beta, odd=True):
+    for i in xrange(odd, len(samples), 2):
+        samples[i] = dbm.sample_hi_given(samples, i, beta)
 
-def neg_sampling(dbm, nsamples, beta=1.0, h1bias_a=None, theano_rng=None):
+def _activation_even_odd(dbm, samples, beta, odd=True):
+    for i in xrange(odd, len(samples), 2):
+        samples[i] = dbm.hi_given(samples, i, beta, apply_sigmoid=False)
+
+def neg_sampling(dbm, nsamples, beta=1.0, pa_bias=None,
+                 marginalize_odd=True, theano_rng=None):
     """
     Generate a sample from the intermediate distribution defined at inverse
     temperature `beta`, starting from state `nsamples`. See file docstring for
@@ -77,25 +86,24 @@ def neg_sampling(dbm, nsamples, beta=1.0, h1bias_a=None, theano_rng=None):
     new_nsamples: array-like object of symbolic matrices
         new_nsamples[i] contains new samples for i-th layer.
     """
-    assert len(nsamples) == 3
-
     new_nsamples = [nsamples[i] for i in xrange(dbm.depth)]
-
-    # contribution from model B, at temperature beta_k
-    new_nsamples[0] = dbm.sample_hi_given(new_nsamples, 0, beta)
-    new_nsamples[2] = dbm.sample_hi_given(new_nsamples, 2, beta)
-    temp =  dbm.hi_given(new_nsamples, 1, beta, apply_sigmoid=False)
-    # contribution from model A, at temperature (1 - beta_k)
-    temp += h1bias_a * (1. - beta)
-    h1_mean = T.nnet.sigmoid(temp)
-    # now compute actual sample
-    new_nsamples[1] = theano_rng.binomial(
-                        size = (dbm.batch_size, dbm.n_u[1]),
-                        n=1, p=h1_mean, dtype=floatX)
+    ### contribution from model B, at temperature beta_k
+    _sample_even_odd(dbm, new_nsamples, beta, odd = marginalize_odd)
+    _activation_even_odd(dbm, new_nsamples, beta, odd = not marginalize_odd)
+    ### contribution from model A, at temperature (1 - beta_k)
+    new_nsamples[not marginalize_odd] += pa_bias * (1. - beta)
+    start_idx = not 0 if marginalize_odd else 1
+    # loop over all layers (not being marginalized)
+    for i in xrange(not marginalize_odd, dbm.depth, 2):
+        new_nsamples[i] = T.nnet.sigmoid(new_nsamples[i])
+        new_nsamples[i] = theano_rng.binomial(
+                            size = (dbm.batch_size, dbm.n_u[i]),
+                            n=1, p=new_nsamples[i], dtype=floatX)
     return new_nsamples
 
 
-def free_energy_at_beta(model, h1_sample, beta, h1bias_a=None):
+def free_energy_at_beta(model, samples, beta, pa_bias=None,
+                        marginalize_odd=True):
     """
     Computes the free-energy of the sample `h1_sample`, for model p_k(h1).
 
@@ -110,13 +118,23 @@ def free_energy_at_beta(model, h1_sample, beta, h1bias_a=None):
     -------
     Symbolic variable, free-energy of sample `h1_sample`, at inv. temp beta.
     """
-    layer0_temp = model.bias[0] + T.dot(h1_sample, model.W[1].T)
-    layer2_temp = model.bias[2] + T.dot(h1_sample, model.W[2])
-    fe_bp_h1  = - T.sum(T.nnet.softplus(beta * layer0_temp), axis=1) \
-                - T.sum(T.nnet.softplus(beta * layer2_temp), axis=1) \
-                - T.dot(h1_sample, model.bias[1]) * beta \
-                - T.dot(h1_sample, h1bias_a) * (1. - beta)
-    return fe_bp_h1
+    keep_idx = numpy.arange(not marginalize_odd, model.depth, 2)
+    marg_idx = numpy.arange(marginalize_odd, model.depth, 2)
+
+    # contribution of biases
+    fe = 0.
+    for i in keep_idx:
+        fe -= T.dot(samples[i], model.bias[i]) * beta
+    # contribution of biases
+    for i in marg_idx:
+        from_im1 = T.dot(samples[i-1], model.W[i]) if i >= 1 else 0.
+        from_ip1 = T.dot(samples[i+1], model.W[i+1].T) if i < model.depth-1 else 0
+        net_input = (from_im1 + from_ip1 + model.bias[i]) * beta
+        fe -= T.sum(T.nnet.softplus(net_input), axis=1)
+
+    fe -= T.dot(samples[not marginalize_odd], pa_bias) * (1. - beta)
+
+    return fe
 
 
 def compute_log_ais_weights(model, free_energy_fn, sample_fn, betas):
@@ -185,13 +203,21 @@ def estimate_from_weights(log_ais_w):
     return dlogz, var_dlogz
 
 
-def compute_log_za(model, pa_h1_bias):
+def compute_log_za(model, pa_bias, marginalize_odd=True):
     """
     Compute the exact partition function of model p_A(h1).
     """
-    log_za = numpy.sum(numpy.log(1 + numpy.exp(pa_h1_bias)))
-    log_za += model.n_u[0] * numpy.log(2)
-    log_za += model.n_u[2] * numpy.log(2)
+    log_za = 0.
+    
+    refa = numpy.sum(numpy.log(1 + numpy.exp(pa_bias)))
+    refa += model.n_u[0] * numpy.log(2)
+    refa += model.n_u[2] * numpy.log(2)
+
+    for i, nu in enumerate(model.n_u):
+        if i == (not marginalize_odd):
+            log_za += numpy.sum(numpy.log(1 + numpy.exp(pa_bias)))
+        else:
+            log_za += numpy.log(2) * nu
     return log_za
 
 
@@ -277,14 +303,20 @@ def estimate_likelihood(model, trainset, testset, large_ais=False,
     rng = numpy.random.RandomState(seed)
     theano_rng = RandomStreams(rng.randint(2**30))
 
-    #BACKUP NSAMPLES AND PSAMPLES
-    backup_psamples = [psample.get_value() for psample in model.psamples]
-    backup_nsamples = [nsample.get_value() for nsample in model.nsamples]
+    ###
+    # Backup DBM states (samples) and uncenter for AIS.
+    ###
+    dbm_backup = DBMBackup(model)
+    dbm_backup.backup()
+    dbm_backup.uncenter()
 
     ##########################
     ## BUILD THEANO FUNCTIONS
     ##########################
     beta = T.scalar()
+    
+    # for an even number of layers, we marginalize the odd layers (and vice-versa)
+    marginalize_odd = (model.depth % 2) == 0
     
     # Build function to retrieve energy.
     E = model.energy(model.nsamples, beta)
@@ -296,26 +328,28 @@ def estimate_likelihood(model, trainset, testset, large_ais=False,
     new_psamples = model.e_step(n_steps=pos_steps)
     inference_fn = theano.function([], new_psamples)
 
-    # Configure baserate bias for h1.
+    # Configure baserate bias for (h0 if `marginalize_odd` else h1)
     temp = numpy.asarray(trainset.X, dtype=floatX)
     mean_train = numpy.mean(temp, axis=0)
     model.setup_pos_func(numpy.tile(mean_train[None,:], (model.batch_size,1)))
     psamples = inference_fn()
-    mean_pos_h1 = numpy.minimum(psamples[1], 1-1e-5)
-    mean_pos_h1 = numpy.maximum(mean_pos_h1, 1e-5)
-    h1bias_a = -numpy.log(1./mean_pos_h1[0] - 1.)
+    mean_pos = numpy.minimum(psamples[not marginalize_odd], 1-1e-5)
+    mean_pos = numpy.maximum(mean_pos, 1e-5)
+    pa_bias = -numpy.log(1./mean_pos[0] - 1.)
 
     # Build Theano function to sample from interpolating distributions.
     updates = {}
     new_nsamples = neg_sampling(model, model.nsamples, beta=beta,
-                                h1bias_a=h1bias_a,
+                                pa_bias=pa_bias,
+                                marginalize_odd = marginalize_odd,
                                 theano_rng = theano_rng)
     for (nsample, new_nsample) in zip(model.nsamples, new_nsamples):
         updates[nsample] = new_nsample
     sample_fn = theano.function([beta], [], updates=updates, name='sample_func')
 
     ### Build function to compute free-energy of p_k(h1).
-    fe_bp_h1 = free_energy_at_beta(model, model.nsamples[1], beta, h1bias_a)
+    fe_bp_h1 = free_energy_at_beta(model, model.nsamples, beta,
+                                   pa_bias, marginalize_odd = marginalize_odd)
     free_energy_fn = theano.function([beta], fe_bp_h1)
 
 
@@ -325,13 +359,12 @@ def estimate_likelihood(model, trainset, testset, large_ais=False,
 
     # Generate exact sample for the base model.
     for i, nsample_i in enumerate(model.nsamples):
-        bias = h1bias_a if i==1 else model.bias[i].get_value()
+        bias = pa_bias if i==1 else model.bias[i].get_value()
         hi_mean_vec = 1. / (1. + numpy.exp(-bias))
         hi_mean = numpy.tile(hi_mean_vec, (model.batch_size, 1))
         r = rng.random_sample(hi_mean.shape)
         hi_sample = numpy.array(hi_mean > r, dtype=floatX)
         nsample_i.set_value(hi_sample)
-
 
     # default configuration for interpolating distributions
     if large_ais:
@@ -348,7 +381,7 @@ def estimate_likelihood(model, trainset, testset, large_ais=False,
     if log_z is None:
         log_ais_w = compute_log_ais_weights(model, free_energy_fn, sample_fn, betas)
         dlogz, var_dlogz = estimate_from_weights(log_ais_w)
-        log_za = compute_log_za(model, h1bias_a)
+        log_za = compute_log_za(model, pa_bias, marginalize_odd)
         log_z = log_za + dlogz
         logging.info('log_z = %f' % log_z)
         logging.info('log_za = %f' % log_za)
@@ -360,39 +393,60 @@ def estimate_likelihood(model, trainset, testset, large_ais=False,
     test_ll = compute_likelihood_given_logz(model, energy_fn, inference_fn, log_z, testset.X)
     logging.info('Test likelihood = %f' % test_ll)
 
-    # RESTORE NSAMPLES AND PSAMPLES
-    [psample.set_value(backup_psample) for (psample, backup_psample) in zip(model.psamples, backup_psamples)]
-    [nsample.set_value(backup_nsample) for (nsample, backup_nsample) in zip(model.nsamples, backup_nsamples)]
+    ###
+    # RESTORE DBM TO ORIGINAL STATE 
+    ###
+    dbm_backup.restore(recenter=True)
 
     return (train_ll, test_ll, log_z)
 
-def uncenter(model):
-    assert model.depth == 3
-    model.flags['enable_centering'] = False
-    # assume centering for now
-    bias = [bias.get_value() for bias in model.bias]
-    offset = [offset.get_value() for offset in model.offset]
-    W = [None] + [W.get_value() for W in model.W[1:]]
 
-    # backup biases for online AIS estimates
-    model.backup = {}
-    for i in xrange(model.depth):
-        model.backup[model.bias[i]] = model.bias[i].get_value()
+class DBMBackup():
+    """
+    Backup things which are modified in AIS code.
+    """
+    def __init__(self, dbm):
+        self.dbm = dbm
 
-    bias[0] -= numpy.dot(offset[1], W[1].T)
-    bias[1] -= numpy.dot(offset[0], W[1]) + numpy.dot(offset[2], W[2].T) 
-    bias[2] -= numpy.dot(offset[1], W[2])
-    for i in xrange(model.depth):
-        model.bias[i].set_value(bias[i])
-    return model
+    def backup(self):
+        # backup samples
+        self.psamples = [psample.get_value() for psample in self.dbm.psamples]
+        self.nsamples = [nsample.get_value() for nsample in self.dbm.nsamples]
+        # backup biases
+        self.bias = []
+        for bias in self.dbm.bias:
+            self.bias += [bias.get_value()]
 
-def recenter(model):
-    # backup biases for online AIS estimates
-    for i in xrange(model.depth):
-        model.bias[i].set_value(model.backup[model.bias[i]])
-    model.flags['enable_centering'] = True
-    del model.backup
-    return model
+    def restore(self, recenter=True):
+        # restore samples
+        for (psample, s_psample) in zip(self.dbm.psamples, self.psamples):
+            psample.set_value(s_psample)
+        for (nsample, s_nsample) in zip(self.dbm.nsamples, self.nsamples):
+            nsample.set_value(s_nsample)
+
+        if recenter:
+            self.dbm.flags['enable_centering'] = True
+            for (bias, s_bias) in zip(self.dbm.bias, self.bias):
+                bias.set_value(s_bias)
+
+    def uncenter(self):
+        # assume centering for now
+        bias = [bias.get_value() for bias in self.dbm.bias]
+        offset = [offset.get_value() for offset in self.dbm.offset]
+        W = [None] + [W.get_value() for W in self.dbm.W[1:]]
+        for i in xrange(self.dbm.depth):
+            sub = 0
+            # account for offset of lower-layer (if not first layer)
+            #bias[i] -=
+            sub += numpy.dot(offset[i-1], W[i]) if i > 0 else 0
+            # account for offset of upper-layer (if not last layer)
+            #bias[i] -=
+            sub += numpy.dot(offset[i+1], W[i+1].T) if i < self.dbm.depth - 1 else 0.
+            bias[i] -= sub
+
+        self.dbm.flags['enable_centering'] = False
+        for i in xrange(self.dbm.depth):
+            self.dbm.bias[i].set_value(bias[i])
 
 if __name__ == '__main__':
 
@@ -404,7 +458,6 @@ if __name__ == '__main__':
 
     # Load model and retrieve parameters.
     model = serial.load(opts.path)
-    model = uncenter(model)
     model.do_theano()
     # Load dataset.
     trainset = mnist.MNIST('train', binarize=True)
