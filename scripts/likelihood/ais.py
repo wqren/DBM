@@ -48,6 +48,7 @@ import pickle
 
 import theano
 import theano.tensor as T
+from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from pylearn2.utils import serial
 from pylearn2.datasets import mnist
 from pylearn2.training_callbacks.training_callback import TrainingCallback
@@ -55,111 +56,8 @@ from pylearn2.training_callbacks.training_callback import TrainingCallback
 floatX = theano.config.floatX
 logging.basicConfig(level=logging.INFO)
 
-class pylearn2_ais_callback(TrainingCallback):
 
-    def __init__(self, trainset, testset,
-                 switch_threshold=None,
-                 switch_at=None,
-                 ais_interval=10):
-
-        self.trainset = trainset
-        self.testset = testset
-        self.switch_threshold = switch_threshold
-        self.switch_at = switch_at
-        self.has_switched = False
-        self.ais_interval = ais_interval
-
-        self.pkl_results = {
-                'epoch': [],
-                'batches_seen': [],
-                'cpu_time': [],
-                'train_ll': [],
-                'test_ll': [],
-                'logz': [],
-                }
-
-        self.jobman_results = {
-                'best_epoch': 0,
-                'best_batches_seen': 0,
-                'best_cpu_time': 0,
-                'best_train_ll': -numpy.Inf,
-                'best_test_ll': -numpy.Inf,
-                'best_logz': 0,
-                'switch_epoch': 0,
-                }
-        fp = open('ais_callback.log','w')
-        fp.write('Epoch\tBatches\tCPU\tTrain\tTest\tlogz\n')
-        fp.close()
-
-    def switch_to_full_natural(self, model):
-        model.switch_to_full_natural()
-        self.jobman_results['switch_epoch'] = model.epochs
-        self.has_switched = True
-        self.ais_interval = 1
-
-    def __call__(self, model, train, algorithm):
-
-        if self.switch_at and (not self.has_switched) and model.epochs >= self.switch_at:
-            self.switch_to_full_natural(model)
-
-        # measure AIS periodically
-        if (model.epochs % self.ais_interval) == 0:
-            model = uncenter(model)
-            (train_ll, test_ll, logz) = estimate_likelihood(model,
-                        self.trainset, self.testset, large_ais=False)
-            model = recenter(model)
-            if self.switch_threshold and model.epochs > 0 and (not self.has_switched):
-                improv = train_ll - self.jobman_results['train_ll']
-                if improv < abs(self.switch_threshold * self.jobman_results['train_ll']):
-                    self.switch_to_full_natural(model)
-            self.log(model, train_ll, test_ll, logz)
-
-            if model.jobman_channel:
-                model.jobman_channel.save()
-
-    def log(self, model, train_ll, test_ll, logz):
-
-        # log to database
-        self.jobman_results['epoch'] = model.epochs
-        self.jobman_results['batches_seen'] = model.batches_seen
-        self.jobman_results['cpu_time'] = model.cpu_time
-        self.jobman_results['train_ll'] = train_ll
-        self.jobman_results['test_ll'] = test_ll
-        self.jobman_results['logz'] = logz
-        if train_ll > self.jobman_results['best_train_ll']:
-            self.jobman_results['best_epoch'] = self.jobman_results['epoch']
-            self.jobman_results['best_batches_seen'] = self.jobman_results['batches_seen']
-            self.jobman_results['best_cpu_time'] = self.jobman_results['cpu_time']
-            self.jobman_results['best_train_ll'] = self.jobman_results['train_ll']
-            self.jobman_results['best_test_ll'] = self.jobman_results['test_ll']
-            self.jobman_results['best_logz'] = self.jobman_results['logz']
-        model.jobman_state.update(self.jobman_results)
-
-        # save to text file
-        fp = open('ais_callback.log','a')
-        fp.write('%i\t%i\t%f\t%f\t%f\t%f\n' % (
-            self.jobman_results['epoch'],
-            self.jobman_results['batches_seen'],
-            self.jobman_results['cpu_time'],
-            self.jobman_results['train_ll'],
-            self.jobman_results['test_ll'],
-            self.jobman_results['logz']))
-        fp.close()
-
-        # save to pickle file
-        self.pkl_results['epoch'] += [model.epochs]
-        self.pkl_results['batches_seen'] += [model.batches_seen]
-        self.pkl_results['cpu_time'] += [model.cpu_time]
-        self.pkl_results['train_ll'] += [train_ll]
-        self.pkl_results['test_ll'] += [test_ll]
-        self.pkl_results['logz'] += [logz]
-        fp = open('ais_callback.pkl','w')
-        pickle.dump(self.pkl_results, fp)
-        fp.close()
-
-
-
-def neg_sampling(dbm, nsamples, beta=1.0, h1bias_a=None):
+def neg_sampling(dbm, nsamples, beta=1.0, h1bias_a=None, theano_rng=None):
     """
     Generate a sample from the intermediate distribution defined at inverse
     temperature `beta`, starting from state `nsamples`. See file docstring for
@@ -191,7 +89,7 @@ def neg_sampling(dbm, nsamples, beta=1.0, h1bias_a=None):
     temp += h1bias_a * (1. - beta)
     h1_mean = T.nnet.sigmoid(temp)
     # now compute actual sample
-    new_nsamples[1] = dbm.theano_rng.binomial(
+    new_nsamples[1] = theano_rng.binomial(
                         size = (dbm.batch_size, dbm.n_u[1]),
                         n=1, p=h1_mean, dtype=floatX)
     return new_nsamples
@@ -357,7 +255,8 @@ def compute_likelihood_given_logz(model, energy_fn, inference_fn, log_z, test_x)
     return likelihood
 
 
-def estimate_likelihood(model, trainset, testset, large_ais=False, log_z=None):
+def estimate_likelihood(model, trainset, testset, large_ais=False,
+                        log_z=None, seed=980293841):
     """
     Compute estimate of log-partition function and likelihood of data.X.
 
@@ -375,6 +274,8 @@ def estimate_likelihood(model, trainset, testset, large_ais=False, log_z=None):
     logz: scalar
         Estimate of log-partition function of `model`.
     """
+    rng = numpy.random.RandomState(seed)
+    theano_rng = RandomStreams(rng.randint(2**30))
 
     #BACKUP NSAMPLES AND PSAMPLES
     backup_psamples = [psample.get_value() for psample in model.psamples]
@@ -406,7 +307,9 @@ def estimate_likelihood(model, trainset, testset, large_ais=False, log_z=None):
 
     # Build Theano function to sample from interpolating distributions.
     updates = {}
-    new_nsamples = neg_sampling(model, model.nsamples, beta=beta, h1bias_a=h1bias_a)
+    new_nsamples = neg_sampling(model, model.nsamples, beta=beta,
+                                h1bias_a=h1bias_a,
+                                theano_rng = theano_rng)
     for (nsample, new_nsample) in zip(model.nsamples, new_nsamples):
         updates[nsample] = new_nsample
     sample_fn = theano.function([beta], [], updates=updates, name='sample_func')
@@ -425,7 +328,7 @@ def estimate_likelihood(model, trainset, testset, large_ais=False, log_z=None):
         bias = h1bias_a if i==1 else model.bias[i].get_value()
         hi_mean_vec = 1. / (1. + numpy.exp(-bias))
         hi_mean = numpy.tile(hi_mean_vec, (model.batch_size, 1))
-        r = numpy.random.random_sample(hi_mean.shape)
+        r = rng.random_sample(hi_mean.shape)
         hi_sample = numpy.array(hi_mean > r, dtype=floatX)
         nsample_i.set_value(hi_sample)
 
@@ -496,6 +399,7 @@ if __name__ == '__main__':
     parser = optparse.OptionParser()
     parser.add_option('-m', '--model', action='store', type='string', dest='path')
     parser.add_option('--large', action='store_true', dest='large', default=False)
+    parser.add_option('--seed', action='store', type='int', dest='seed', default=980293841)
     (opts, args) = parser.parse_args()
 
     # Load model and retrieve parameters.
@@ -506,4 +410,4 @@ if __name__ == '__main__':
     trainset = mnist.MNIST('train', binarize=True)
     testset = mnist.MNIST('test', binarize=True)
 
-    estimate_likelihood(model, trainset, testset, large_ais=opts.large)
+    estimate_likelihood(model, trainset, testset, large_ais=opts.large, seed=opts.seed)
