@@ -1,6 +1,8 @@
 import numpy
 import pickle
 
+from pylearn2.training_callbacks.training_callback import TrainingCallback
+
 from DBM.scripts.likelihood import ais
 
 class pylearn2_ais_callback(TrainingCallback):
@@ -52,10 +54,8 @@ class pylearn2_ais_callback(TrainingCallback):
 
         # measure AIS periodically
         if (model.epochs % self.ais_interval) == 0:
-            model = uncenter(model)
             (train_ll, test_ll, logz) = ais.estimate_likelihood(model,
                         self.trainset, self.testset, large_ais=False)
-            model = recenter(model)
             if self.switch_threshold and model.epochs > 0 and (not self.has_switched):
                 improv = train_ll - self.jobman_results['train_ll']
                 if improv < abs(self.switch_threshold * self.jobman_results['train_ll']):

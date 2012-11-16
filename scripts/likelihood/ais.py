@@ -51,7 +51,6 @@ import theano.tensor as T
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from pylearn2.utils import serial
 from pylearn2.datasets import mnist
-from pylearn2.training_callbacks.training_callback import TrainingCallback
 
 floatX = theano.config.floatX
 logging.basicConfig(level=logging.INFO)
