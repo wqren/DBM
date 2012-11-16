@@ -632,15 +632,11 @@ class DBM(Model, Block):
         return updates
 
     def get_natural_diag_direction(self, ml_cost, nsamples):
-        assert self.depth == 3
         damp = self.minres_params['damp']
         cnsamples = self.center_samples(nsamples)
-        rvals = natural.compute_L_diag(*nsamples)
-        ml_cost.grads[self.W[1]] *= 1./(rvals[0] + damp)
-        ml_cost.grads[self.W[2]] *= 1./(rvals[1] + damp)
-        ml_cost.grads[self.bias[0]] *= 1./(rvals[2] + damp)
-        ml_cost.grads[self.bias[1]] *= 1./(rvals[3] + damp)
-        ml_cost.grads[self.bias[2]] *= 1./(rvals[4] + damp)
+        rvals = natural.generic_compute_L_diag(*nsamples)
+        for i, param in enumerate(self.params):
+            ml_cost.grads[param] *= 1./ (rvals[i] + damp)
 
     def get_natural_direction(self, ml_cost, nsamples, xinit=None,
                               precondition=None):
@@ -659,13 +655,6 @@ class DBM(Model, Block):
         assert precondition in [None, 'jacobi']
         cnsamples = self.center_samples(nsamples)
 
-        assert self.depth == 3
-        inputs = [ml_cost.grads[self.W[1]],
-                  ml_cost.grads[self.W[2]],
-                  ml_cost.grads[self.bias[0]],
-                  ml_cost.grads[self.bias[1]],
-                  ml_cost.grads[self.bias[2]]]
-       
         if self.computational_bs > 0:
             def Lx_func(*args):
                 Lneg_x = natural.generic_compute_Lx_batches(
@@ -691,7 +680,7 @@ class DBM(Model, Block):
 
         rvals = minres.minres(
                 Lx_func,
-                inputs,
+                [ml_cost.grads[param] for param in self.params],
                 rtol = self.minres_params['rtol'],
                 damp = self.minres_params['damp'],
                 maxit = self.minres_params['maxit'],
@@ -702,11 +691,8 @@ class DBM(Model, Block):
         newgrads = rvals[0]
 
         # Now replace grad with natural gradient.
-        ml_cost.grads[self.W[1]] = newgrads[0]
-        ml_cost.grads[self.W[2]] = newgrads[1]
-        ml_cost.grads[self.bias[0]] = newgrads[2]
-        ml_cost.grads[self.bias[1]] = newgrads[3]
-        ml_cost.grads[self.bias[2]] = newgrads[4]
+        for i, param in enumerate(self.params):
+            ml_cost.grads[param] = newgrads[i]
         
         return rvals[1:], self.get_dparam_updates(*newgrads)
 
@@ -715,7 +701,7 @@ class DBM(Model, Block):
         self.flags['enable_natural_diag'] = False
         self.set_batch_size(256)
 
-    def set_batch_size(self, batch_size):
+    def set_batch_size(self, batch_size, redo_monitor=True):
         """
         Change the batch size of a model which has already been initialized.
         :param batch_size: int. new batch size.
@@ -739,7 +725,9 @@ class DBM(Model, Block):
         self.do_theano()
         for i in xrange(len(self.monitor._batch_size)):
             self.monitor._batch_size[i] = batch_size
-        self.monitor.redo_theano()
+
+        if redo_monitor:
+            self.monitor.redo_theano()
 
     def __call__(self, v):
         pass
